@@ -34,7 +34,7 @@ PRETRAIN_SOURCES = {
     },
     "cosmopedia": {
         "repo": "HuggingFaceTB/cosmopedia-v2",
-        "config": None,
+        "config": "cosmopedia-v2",
         "split": "train",
         "field": "text",
         "share": 0.30,

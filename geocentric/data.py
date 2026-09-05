@@ -220,10 +220,16 @@ def prepare_corpus(
     n_val = max(0, min(n_val, total_written // 2))
     n_train = total_written - n_val
 
+    # Copy in chunks. np.asarray(memmap[:n]) would pull the whole split into RAM —
+    # at a few billion tokens that is several GB and would fail on most machines.
+    chunk_tokens = 64 << 20  # 128 MB at 2 bytes per token
     all_tokens = np.memmap(tmp_bin, dtype=dtype, mode="r", shape=(total_written,))
-    np.asarray(all_tokens[:n_train]).tofile(train_bin)
-    if n_val > 0:
-        np.asarray(all_tokens[n_train:]).tofile(val_bin)
+    for path, begin, end in ((train_bin, 0, n_train), (val_bin, n_train, total_written)):
+        if end <= begin:
+            continue
+        with path.open("wb") as sink:
+            for offset in range(begin, end, chunk_tokens):
+                np.asarray(all_tokens[offset : min(offset + chunk_tokens, end)]).tofile(sink)
     del all_tokens
     tmp_bin.unlink(missing_ok=True)
 
