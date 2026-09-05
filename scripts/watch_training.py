@@ -184,6 +184,28 @@ def bar(fraction: float, width: int = 40) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+_RATE_SAMPLES: list[tuple[float, int]] = []
+
+
+def observed_seconds_per_step(step: int) -> float | None:
+    """Wall-clock seconds per step, measured rather than derived.
+
+    Throughput is sampled only while the training loop runs, so an ETA computed
+    from it silently omits evaluation and checkpoint writes. Those cost real time —
+    measured here at roughly 6% — and an ETA that ignores them reads early.
+    """
+    now = time.time()
+    if not _RATE_SAMPLES or _RATE_SAMPLES[-1][1] != step:
+        _RATE_SAMPLES.append((now, step))
+        del _RATE_SAMPLES[:-40]
+    if len(_RATE_SAMPLES) < 2:
+        return None
+    (t0, s0), (t1, s1) = _RATE_SAMPLES[0], _RATE_SAMPLES[-1]
+    if s1 <= s0 or t1 <= t0:
+        return None
+    return (t1 - t0) / (s1 - s0)
+
+
 def render(run_dir: Path, history: list[float], eval_history: list[float],
            pid: int | None = None, notice: str = "") -> str:
     metrics_path = run_dir / "training_metrics.json"
@@ -242,7 +264,12 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
         eval_history.append(ev)
 
     frac = step / total
-    remaining = (total - step) * (tok_per_step / tps) if tps else 0
+    # Prefer the measured rate; fall back to throughput until two samples exist.
+    per_step = observed_seconds_per_step(step)
+    measured = per_step is not None
+    if not measured and tps:
+        per_step = tok_per_step / tps
+    remaining = (total - step) * per_step if per_step else 0
 
     lines.append("")
     lines.append(f"  Stage    {phase}  ·  {status}")
@@ -251,7 +278,11 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
                  f"{' · compiled' if cfg.get('compiled') else ''}")
     lines.append("")
     lines.append(f"  {bar(frac, min(50, width - 30))}  {frac*100:5.1f}%")
-    lines.append(f"  step {step:,} / {total:,}      ETA {human_time(remaining)}")
+    eta_note = "" if measured else " (est.)"
+    lines.append(f"  step {step:,} / {total:,}      ETA {human_time(remaining)}{eta_note}")
+    if remaining:
+        done_at = datetime.now() + timedelta(seconds=remaining)
+        lines.append(f"  finishes ~{done_at:%a %d %b %H:%M}")
     if tps == 0 and status == "running":
         # A fresh or resumed run has not written a throughput sample yet; saying
         # "0 tok/s" for the first few minutes reads as a stalled run.
