@@ -23,32 +23,92 @@ from pathlib import Path
 BLOCKS = "▁▂▃▄▅▆▇█"
 
 
+TRAINER_COMMANDS = {"pretrain", "sft", "pipeline"}
+
+
 def find_trainer(run_dir: Path) -> int | None:
-    """Locate the training process driving this run directory."""
-    target = str(run_dir.resolve())
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
+    """Locate the training process driving this run directory.
+
+    Prefers the pid file the trainer writes. The fallback scans /proc but matches
+    argv *elements* exactly rather than searching the raw command string: a shell
+    running `grep pretrain logs/pretrain.log` mentions every keyword a trainer
+    does, and substring matching happily reports it as the training process.
+    """
+    pid_file = run_dir / "trainer.pid"
+    if pid_file.exists():
         try:
-            cmdline = (proc / "cmdline").read_bytes().decode("utf-8", "replace").replace("\0", " ")
-        except (OSError, PermissionError):
+            pid = int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            pid = None
+        if pid and _is_trainer(pid):
+            return pid
+
+    me = os.getpid()
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit() or int(proc.name) == me:
             continue
-        if "geocentric" not in cmdline:
-            continue
-        if not re.search(r"\b(pretrain|sft|pipeline)\b", cmdline):
-            continue
-        if run_dir.name in cmdline or target in cmdline:
+        if _is_trainer(int(proc.name), run_dir):
             return int(proc.name)
     return None
 
 
-def process_state(pid: int) -> str:
-    """Linux process state letter: T means stopped by a signal."""
+def _argv(pid: int) -> list[str]:
+    try:
+        raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+    except (OSError, PermissionError):
+        return []
+    return [part for part in raw.decode("utf-8", "replace").split("\0") if part]
+
+
+def _is_trainer(pid: int, run_dir: Path | None = None) -> bool:
+    argv = _argv(pid)
+    if not argv or pid == os.getpid():
+        return False
+    if not any(part == "geocentric.cli" or part.endswith("/cli.py") for part in argv):
+        return False
+    if not TRAINER_COMMANDS.intersection(argv):
+        return False
+    if run_dir is not None:
+        target = str(run_dir.resolve())
+        if not any(arg == run_dir.name or arg == str(run_dir) or arg == target
+                   or arg.rstrip("/").endswith("/" + run_dir.name) for arg in argv):
+            return False
+    return True
+
+
+def process_state(pid: int | None) -> str:
+    """Linux process state letter. T is stopped by a signal, Z is a zombie.
+
+    Returns "" when the process is gone, so callers can distinguish "not running"
+    from "running" instead of defaulting a dead process to alive.
+    """
+    if pid is None:
+        return ""
     try:
         stat = (Path("/proc") / str(pid) / "stat").read_text()
         return stat.rsplit(")", 1)[1].split()[0]
     except (OSError, IndexError):
-        return "?"
+        return ""
+
+
+def is_alive(pid: int | None) -> bool:
+    return process_state(pid) not in ("", "Z", "X")
+
+
+def signal_process(pid: int | None, sig: int) -> bool:
+    """Signal a process, tolerating it having exited a moment ago.
+
+    The pid is read once per refresh, so it can go stale between the redraw and
+    the keypress that acts on it. An unguarded os.kill then raises
+    ProcessLookupError and takes the watcher down with it.
+    """
+    if not is_alive(pid):
+        return False
+    try:
+        os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
 
 
 class KeyReader:
@@ -217,15 +277,23 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
         age = time.time() - newest.stat().st_mtime
         lines.append(f"  last save  {newest.name} ({newest.stat().st_size/1024**3:.2f} GB, {human_time(age)} ago)")
     lines.append("")
-    lines.extend(control_footer(pid, notice))
+    lines.extend(control_footer(pid, notice, cfg.get("command", ""), status))
     lines.append("═" * width)
     return "\n".join(lines)
 
 
-def control_footer(pid: int | None, notice: str) -> list[str]:
+def control_footer(pid: int | None, notice: str, resume_cmd: str = "", status: str = "") -> list[str]:
     out = []
-    if pid is None:
-        out.append("  (no training process found — controls unavailable)")
+    if not is_alive(pid):
+        label = "finished" if status == "complete" else "not running"
+        out.append(f"  \033[90m○ {label}\033[0m")
+        if status != "complete":
+            out.append("")
+            out.append("  Resume from the last checkpoint with:")
+            out.append(f"    \033[36m{resume_cmd}\033[0m" if resume_cmd
+                       else "    (rerun the pretrain command you started with)")
+        out.append("")
+        out.append("  [q] quit watching")
     else:
         paused = process_state(pid) == "T"
         state = "\033[33m● PAUSED\033[0m" if paused else "\033[32m● running\033[0m"
@@ -280,19 +348,30 @@ def main() -> None:
                     # SIGSTOP freezes the process between instructions. Queued CUDA
                     # work drains, VRAM stays allocated, and SIGCONT picks up exactly
                     # where it left off — nothing is recomputed and no step is lost.
-                    os.kill(pid, signal.SIGCONT if paused else signal.SIGSTOP)
-                    notice = "Resumed." if paused else "Paused. VRAM stays reserved; press p again to resume."
+                    if signal_process(pid, signal.SIGCONT if paused else signal.SIGSTOP):
+                        notice = "Resumed." if paused else "Paused. VRAM stays reserved; press p again to resume."
+                    else:
+                        notice = "That process is no longer running."
                     notice_until = time.time() + 6
                 elif key == "s":
                     notice = "Stop training and save a checkpoint? Press s again to confirm, any other key to cancel."
                     print("\033[2J\033[H" + render(run_dir, history, eval_history, pid, notice), flush=True)
-                    if (keys.poll(10.0) or "").lower() == "s":
-                        if process_state(pid) == "T":
-                            os.kill(pid, signal.SIGCONT)  # a stopped process cannot handle SIGINT
-                        os.kill(pid, signal.SIGINT)
-                        notice = "Stopping. The trainer is writing a checkpoint; rerun the same command to resume."
-                    else:
+                    confirmed = (keys.poll(10.0) or "").lower() == "s"
+                    # Re-resolve the pid: the trainer may have finished while the
+                    # confirmation prompt was on screen.
+                    pid = find_trainer(run_dir)
+                    if not confirmed:
                         notice = "Cancelled."
+                    elif not is_alive(pid):
+                        notice = "Training is no longer running; nothing to stop."
+                    else:
+                        # A SIGSTOPped process cannot act on SIGINT, so wake it first.
+                        if process_state(pid) == "T":
+                            signal_process(pid, signal.SIGCONT)
+                        if signal_process(pid, signal.SIGINT):
+                            notice = "Stopping. The trainer is writing a checkpoint; rerun the command to resume."
+                        else:
+                            notice = "Could not signal the trainer; it may have just exited."
                     notice_until = time.time() + 8
     except KeyboardInterrupt:
         pass

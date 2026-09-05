@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -222,8 +224,14 @@ def pretrain(
             "learning_rate": learning_rate, "total_steps": total_steps,
             "tokens_per_step": tokens_per_step, "dtype": str(dtype), "compiled": compiled,
             "corpus_tokens": total_corpus_tokens, "recommended_tokens": budget,
+            # Stored so tooling can show the exact line that resumes this run.
+            "command": " ".join(shlex.quote(a) for a in [sys.executable, "-m", "geocentric.cli", *sys.argv[1:]]),
         },
     )
+
+    # Publish the pid so monitoring tools identify this run unambiguously.
+    pid_file = out / "trainer.pid"
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
     meter = Throughput(n_params, block_size, device, dtype)
     step = start_step
@@ -325,6 +333,7 @@ def pretrain(
         return
     finally:
         cleanup(device)
+        pid_file.unlink(missing_ok=True)
 
     save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
     update_training_metrics(out, {"status": "complete", "message": "Pretraining complete."})
