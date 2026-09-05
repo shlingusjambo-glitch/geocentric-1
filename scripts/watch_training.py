@@ -252,6 +252,11 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
     lines.append("")
     lines.append(f"  {bar(frac, min(50, width - 30))}  {frac*100:5.1f}%")
     lines.append(f"  step {step:,} / {total:,}      ETA {human_time(remaining)}")
+    if tps == 0 and status == "running":
+        # A fresh or resumed run has not written a throughput sample yet; saying
+        # "0 tok/s" for the first few minutes reads as a stalled run.
+        nxt = ((step // 20) + 1) * 20
+        lines.append(f"  warming up — first measurement at step {nxt:,}")
     lines.append("")
 
     if loss is not None:

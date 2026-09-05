@@ -233,6 +233,12 @@ def pretrain(
     pid_file = out / "trainer.pid"
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
+    update_training_metrics(out, {
+        "step": start_step,
+        "tokens_seen": start_step * tokens_per_step,
+        "message": f"Resuming at step {start_step:,}." if start_step else "Starting.",
+    })
+
     meter = Throughput(n_params, block_size, device, dtype)
     step = start_step
     best_eval = float("inf")
@@ -292,7 +298,7 @@ def pretrain(
                 micro_count = 0
                 pbar.update(1)
 
-                if step % log_every == 0:
+                if step % log_every == 0 or step == start_step + 1:
                     tps, mfu = meter.read()
                     pbar.set_description(format_progress(step, total_steps, avg_loss, lr, tps, mfu))
                     update_training_metrics(out, {
