@@ -161,16 +161,16 @@ def armillary_memory_probe(args) -> Dict[str, Any]:
     ids = torch.randint(0, args.vocab_size, (2, 64))
 
     def state_bytes(optimizer, steps: int) -> int:
+        peak = 0
         for _ in range(steps):
             model(ids, labels=ids)[1].backward()
             optimizer.step()
             model.zero_grad(set_to_none=True)
-        total = 0
-        for state in optimizer.state.values():
-            for value in state.values():
-                if torch.is_tensor(value) and value.dim() > 0:
-                    total += value.numel() * value.element_size()
-        return total
+            total = sum(value.numel() * value.element_size()
+                        for state in optimizer.state.values() for value in state.values()
+                        if torch.is_tensor(value) and value.dim() > 0)
+            peak = max(peak, total)
+        return peak
 
     plain = state_bytes(build_optimizer(model, 1e-4, quiet=True, device_type="cpu"), 3)
     rows = [{"optimizer": "AdamW (fp32)", "rings": "-", "bytes": plain,

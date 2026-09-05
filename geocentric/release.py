@@ -108,7 +108,7 @@ def release(
     if remove_watermark:
         (out / WATERMARK_FILE).unlink(missing_ok=True)
 
-    for name in ("tokenizer.json", "config.json", "vision.json", "vision_config.json"):
+    for name in ("tokenizer.json", "config.json"):
         source = src / name
         if source.exists():
             shutil.copyfile(source, out / name)
@@ -116,6 +116,10 @@ def release(
     config = dict(slim.get("config") or {})
     config["watermark"] = effective.to_dict() if effective else None
     (out / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+    # The old sidecar name vision.json is also a common dataset name. Regenerate
+    # the sidecar from checkpoint metadata rather than copying possible raw data.
+    if config.get("vision"):
+        (out / "vision_config.json").write_text(json.dumps(config["vision"], indent=2), encoding="utf-8")
 
     report_path: Optional[Path] = None
     result = None

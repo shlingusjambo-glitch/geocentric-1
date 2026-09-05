@@ -186,6 +186,12 @@ def pretrain(
     # a large part of why small from-scratch models plateau early.
     model = model.to(device=device, dtype=torch.float32)
     model.loss_chunk_size = loss_chunk_size
+    if gradient_checkpointing:
+        # Users commonly add this flag after an OOM on an existing run. Loading
+        # checkpoint config must not silently discard that new memory request.
+        model.config.gradient_checkpointing = True
+        for block in model.blocks:
+            block.gradient_checkpointing = True
     if config.block_size != block_size:
         raise ValueError("Requested block_size differs from resumed checkpoint")
 

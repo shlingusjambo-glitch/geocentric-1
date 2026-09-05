@@ -54,6 +54,12 @@ def test_release_strips_optimizer_state(run_dir, tmp_path):
     assert (out / "m_sft.pt").stat().st_size < (run_dir / "m_sft.pt").stat().st_size
 
 
+def test_release_does_not_package_a_vision_dataset(run_dir, tmp_path):
+    (run_dir / "vision.json").write_text('[{"image":"private.png","caption":"training only"}]')
+    out = release(str(run_dir), str(tmp_path / "dist"), benchmark=False)
+    assert not (out / "vision.json").exists()
+
+
 def test_release_can_change_the_identity(run_dir, tmp_path):
     new = WatermarkConfig(identity="Renamed At Release", delta=4.0)
     out = release(str(run_dir), str(tmp_path / "dist"), watermark=new, benchmark=False)

@@ -69,7 +69,7 @@ writes; initial process/kernel overhead and trial order are material at this sca
 The standalone systems benchmark is a cleaner steady-state timing measurement.
 
 Raw outputs: [seed 2026](realtext-seed2026.json), [seed 2027](realtext-seed2027.json),
-[seed 2028](realtext-seed2028.json). Checkpoints and copyrighted/source text are not
+[seed 2028](realtext-seed2028.json). Checkpoints and source text are not
 included in the commit. The original public-domain source remains downloadable.
 
 ```bash
@@ -89,3 +89,13 @@ the accumulation target. The vision dataset is verified not to be overwritten.
 CUDA-specific tests are skipped locally and must pass on NVIDIA hardware before
 claiming RTX 2060 validation. Ubuntu 26.04 CPU CI and CUDA validation instructions:
 [CUDA guide](../../CUDA.md). A Mac test pass is not an Ubuntu/CUDA test pass.
+
+### Executed Linux CI
+
+[Training implementation CI run](https://github.com/shlingusjambo-glitch/geocentric-1/actions/runs/33999806028)
+passed on both Linux jobs. Ubuntu 26.04 container: Python 3.14.4, PyTorch 2.14.0+cpu,
+**193 passed, 10 skipped** at training implementation commit `6c66f3e`. The skips are
+nine CUDA tests plus the MPS-only test. The NVIDIA job was explicitly skipped.
+The local CPU/MPS suite also passes; local AOT-eager compilation successfully ran
+chunked forward/backward at two sequence lengths. AOT-eager does not validate CUDA
+Inductor kernels. A later release-packaging regression test protects vision datasets.

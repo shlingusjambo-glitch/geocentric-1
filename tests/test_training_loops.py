@@ -41,8 +41,9 @@ def test_pretrain_checkpoint_tokens_and_completed_resume(source, monkeypatch, pr
     assert saved["tokens_seen"] == 3 * 2 * 2 * 32
     metrics = json.loads((directory / "training_metrics.json").read_text())
     assert metrics["tokens_seen"] == saved["tokens_seen"]
-    train.pretrain(**kwargs)
+    train.pretrain(**{**kwargs, "gradient_checkpointing": True})
     resumed = torch.load(path, weights_only=False)
+    assert resumed["config"]["gradient_checkpointing"] is True
     for key, tensor in saved["model"].items():
         assert torch.equal(tensor, resumed["model"][key])
     assert resumed["tokens_seen"] == saved["tokens_seen"]

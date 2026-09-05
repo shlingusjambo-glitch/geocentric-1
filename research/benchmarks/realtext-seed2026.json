@@ -171,10 +171,11 @@
       {
         "optimizer": "RingAdamW",
         "rings": 8,
-        "bytes": 14244352,
-        "bytes_per_param": 2.48,
-        "params_in_the_same_budget": 1.53
+        "bytes": 15587840,
+        "bytes_per_param": 2.71,
+        "params_in_the_same_budget": 1.49
       }
     ]
-  }
+  },
+  "memory_measurement": "Maximum persistent state across rotation, remeasured after fixing last-ring-only reporting."
 }
