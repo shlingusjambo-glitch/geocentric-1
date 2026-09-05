@@ -1,0 +1,140 @@
+{
+  "previous": {
+    "bench": {
+      "params": 120787072,
+      "block_size": 1024,
+      "heldout_nats_per_token": 3.726991128921509,
+      "heldout_perplexity": 41.55388957865741,
+      "heldout_bits_per_byte": 1.0663433973721568,
+      "code_nats": 2.4673624436060586,
+      "prose_nats": 3.236599008242289,
+      "generations": [
+        {
+          "name": "factual",
+          "prompt": "The capital of France is",
+          "output": "also not a government.\n- \"Military\" means the military to be held in a state of war with the British and American colonies, but it is also considered a political entity and has an official language. The term \"same\" means \"to have a political or political party.\"\n- \"Italian\" means \"to have a military\" or \"to be a military\". It",
+          "seconds": 1.665935750999779
+        },
+        {
+          "name": "science",
+          "prompt": "Photosynthesis is the process by which",
+          "output": "an atom moves from one another to another, in order to produce a new form of energy.\nIt is also known as the \"internal\" process because it involves combining the energy and other elements within an atom into a single atom.\nIn addition, it is not surprising that the molecule can be absorbed by a material (or any substance) at its ends, even though it is constantly being",
+          "seconds": 1.684832766000909
+        },
+        {
+          "name": "definition",
+          "prompt": "A large language model is",
+          "output": "an interactive platform for the project to be used in the development of a new kind.\nThe programme will be open and open to all users, from the user, from the location of the school library at the local library. The training will then be conducted with the help of the instructor/teacher staff, who will create a project plan for this workshop. This will also allow you to make your own",
+          "seconds": 1.6694341200018243
+        },
+        {
+          "name": "narrative",
+          "prompt": "The old lighthouse keeper walked down to the shore and",
+          "output": "moved down into the ground.\nIn the first part of the nineteenth century, the first man had been captured by the British in 1789, but it is said that the French ship was made in a land called the Lighthouse. It is also believed that it was not known from the Dutch East, but from the time of the 16th century, there were no settlers here.\nIn the",
+          "seconds": 1.6745457960023487
+        },
+        {
+          "name": "instructional",
+          "prompt": "To bake bread, first",
+          "output": ", we need to turn the ball into a clean jar.\nWe must keep in mind that the air is an area of warm weather and may have an impact on the temperature. If you are concerned about the temperature, the snow should be wet. If you have a cold winter winter season, you can also use the snow as an indicator for the temperature. The snow should be dry, so it",
+          "seconds": 1.6785985599999549
+        },
+        {
+          "name": "list",
+          "prompt": "Three reasons to exercise regularly:",
+          "output": "- Increased concentration.\n- Reduced caffeine levels\n- More severe physical activity\n- Impaired muscle tone, and increasing body fat intake\n- Higher risk of cardiovascular disease\n- Decreased blood pressure\n- Increased risk for heart diseases\nIn addition, it is important that you do not have to take a course before exercising. If you have a high-intensity workout and are not physically active",
+          "seconds": 1.6735787269972207
+        },
+        {
+          "name": "code",
+          "prompt": "```python\ndef fibonacci(n):",
+          "output": "return 1.0 * 1.0 * 0.1 * 2.0 / 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 / 1.0 * 1.0 * 1.0 * 1.",
+          "seconds": 1.6717001280012482
+        },
+        {
+          "name": "dialogue",
+          "prompt": "\"Where are you going?\" she asked. He",
+          "output": "explained that there's a special place where the author will share information and ideas, rather than just a fancy name like \"The Book of Stakes\" or \"A Story of Stakes.\"\nThere's also one important part of the story of Stake, also known as \"The Book of Stakes,\" a short-lived person who lived in New England in 1790 and later was a descend",
+          "seconds": 1.6756662339976174
+        },
+        {
+          "name": "arithmetic",
+          "prompt": "If a train leaves at 3pm and travels for two hours, it arrives at",
+          "output": "the same time.\nWhat is the difference between speed and power?\nA speed point is a constant distance to be reached by using speed and force. It is also used in different ways (e.g., through speed and velocity) to establish an altitude.\nWhat are the difference between speed and force?\nThe difference between speed and power is that the rate of change is always determined by",
+          "seconds": 1.6849965569999767
+        },
+        {
+          "name": "conversational",
+          "prompt": "Hello! What can you help me with?",
+          "output": "- 1. What do you think is a good way to communicate with each other and to communicate with others?\n- 2. How do you feel when you are in this situation?\nThere are many ways we can help you to communicate with each other. Let\u2019s explore some ways you can use these strategies to make your own communication easier.\n- 3. Write a few sentences.",
+          "seconds": 1.67653284699918
+        }
+      ]
+    },
+    "metrics": {
+      "phase": "pretraining",
+      "status": "running",
+      "config": {
+        "vocab_size": 32000,
+        "block_size": 1024,
+        "n_layer": 11,
+        "n_head": 14,
+        "n_kv_head": 2,
+        "n_embd": 896,
+        "params": 120787072,
+        "batch_size": 2,
+        "gradient_accumulation_steps": 122,
+        "learning_rate": 0.0006,
+        "total_steps": 10588,
+        "tokens_per_step": 249856,
+        "dtype": "torch.float16",
+        "compiled": true,
+        "corpus_tokens": 2645628484,
+        "recommended_tokens": 2415741440,
+        "command": "/home/elywright/Geocentric/geocentric/.venv/bin/python -m geocentric.cli pretrain --data_path data/pretrain --output_dir runs/geocentric-120m --preset 120m --block_size 1024 --vocab_size 32000 --gradient_accumulation_steps 122 --learning_rate 6e-4 --warmup_ratio 0.01 --doc_sep '\n\n\n' --eval_every 250 --save_every 100 --modelver Geocentric"
+      },
+      "epoch": 0,
+      "epochs": 0,
+      "step": 780,
+      "batch": 0,
+      "loss": 3.7299959620491405,
+      "perplexity": 41.678939866178446,
+      "eval_loss": 4.043354721069336,
+      "best_eval_loss": null,
+      "history": {
+        "steps": [
+          744,
+          760,
+          780
+        ],
+        "loss": [
+          3.7778395492522443,
+          3.7500933858214833,
+          3.7299959620491405
+        ],
+        "eval_loss": [
+          4.043354721069336
+        ]
+      },
+      "gradient_accumulation_steps": 122,
+      "use_scaler": false,
+      "start_time": "2026-09-05T05:47:41.067854Z",
+      "last_update": "2026-09-05T05:57:12.640370Z",
+      "message": "Training.",
+      "tokens_seen": 194887680,
+      "lr": 0.0005945108503395432,
+      "tokens_per_second": 16140.89747683575,
+      "mfu": 0.44991803128551017,
+      "peak_memory_gb": 3.1469688415527344
+    }
+  },
+  "entries": [
+    {
+      "milestone": 750,
+      "time": "05 Sep 01:02",
+      "step": 780,
+      "loss": 3.7299959620491405,
+      "ppl": 41.55388957865741
+    }
+  ]
+}
