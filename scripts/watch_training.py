@@ -7,13 +7,73 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
+import select
 import shutil
+import signal
 import subprocess
+import sys
+import termios
 import time
+import tty
 from datetime import datetime, timedelta
 from pathlib import Path
 
 BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def find_trainer(run_dir: Path) -> int | None:
+    """Locate the training process driving this run directory."""
+    target = str(run_dir.resolve())
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            cmdline = (proc / "cmdline").read_bytes().decode("utf-8", "replace").replace("\0", " ")
+        except (OSError, PermissionError):
+            continue
+        if "geocentric" not in cmdline:
+            continue
+        if not re.search(r"\b(pretrain|sft|pipeline)\b", cmdline):
+            continue
+        if run_dir.name in cmdline or target in cmdline:
+            return int(proc.name)
+    return None
+
+
+def process_state(pid: int) -> str:
+    """Linux process state letter: T means stopped by a signal."""
+    try:
+        stat = (Path("/proc") / str(pid) / "stat").read_text()
+        return stat.rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return "?"
+
+
+class KeyReader:
+    """Read single keystrokes without blocking the refresh loop."""
+
+    def __init__(self) -> None:
+        self.enabled = sys.stdin.isatty()
+        self.saved = None
+
+    def __enter__(self) -> "KeyReader":
+        if self.enabled:
+            self.saved = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.enabled and self.saved is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.saved)
+
+    def poll(self, timeout: float) -> str | None:
+        if not self.enabled:
+            time.sleep(timeout)
+            return None
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        return sys.stdin.read(1) if ready else None
 
 
 def sparkline(values: list[float], width: int = 48) -> str:
@@ -64,7 +124,8 @@ def bar(fraction: float, width: int = 40) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def render(run_dir: Path, history: list[float], eval_history: list[float]) -> str:
+def render(run_dir: Path, history: list[float], eval_history: list[float],
+           pid: int | None = None, notice: str = "") -> str:
     metrics_path = run_dir / "training_metrics.json"
     corpus_tmp = run_dir / "corpus" / "corpus.tmp.bin"
     lines: list[str] = []
@@ -156,9 +217,27 @@ def render(run_dir: Path, history: list[float], eval_history: list[float]) -> st
         age = time.time() - newest.stat().st_mtime
         lines.append(f"  last save  {newest.name} ({newest.stat().st_size/1024**3:.2f} GB, {human_time(age)} ago)")
     lines.append("")
-    lines.append(f"  {datetime.now():%H:%M:%S}   Ctrl+C to stop watching (training keeps running)")
+    lines.extend(control_footer(pid, notice))
     lines.append("═" * width)
     return "\n".join(lines)
+
+
+def control_footer(pid: int | None, notice: str) -> list[str]:
+    out = []
+    if pid is None:
+        out.append("  (no training process found — controls unavailable)")
+    else:
+        paused = process_state(pid) == "T"
+        state = "\033[33m● PAUSED\033[0m" if paused else "\033[32m● running\033[0m"
+        out.append(f"  {state}   pid {pid}")
+        out.append("")
+        out.append("  [p] " + ("resume" if paused else "pause") + "    [s] stop & checkpoint    [q] quit watching")
+    if notice:
+        out.append("")
+        out.append(f"  {notice}")
+    out.append("")
+    out.append(f"  {datetime.now():%H:%M:%S}   quitting the watcher never stops training")
+    return out
 
 
 def main() -> None:
@@ -171,16 +250,53 @@ def main() -> None:
     run_dir = Path(args.run_dir)
     history: list[float] = []
     eval_history: list[float] = []
+
+    if args.once:
+        print(render(run_dir, history, eval_history, find_trainer(run_dir)))
+        return
+
+    notice = ""
+    notice_until = 0.0
     try:
-        while True:
-            frame = render(run_dir, history, eval_history)
-            if args.once:
-                print(frame)
-                return
-            print("\033[2J\033[H" + frame, flush=True)
-            time.sleep(args.interval)
+        with KeyReader() as keys:
+            while True:
+                pid = find_trainer(run_dir)
+                if time.time() > notice_until:
+                    notice = ""
+                print("\033[2J\033[H" + render(run_dir, history, eval_history, pid, notice), flush=True)
+
+                key = keys.poll(args.interval)
+                if not key:
+                    continue
+                key = key.lower()
+
+                if key == "q":
+                    break
+                if pid is None:
+                    continue
+
+                if key == "p":
+                    paused = process_state(pid) == "T"
+                    # SIGSTOP freezes the process between instructions. Queued CUDA
+                    # work drains, VRAM stays allocated, and SIGCONT picks up exactly
+                    # where it left off — nothing is recomputed and no step is lost.
+                    os.kill(pid, signal.SIGCONT if paused else signal.SIGSTOP)
+                    notice = "Resumed." if paused else "Paused. VRAM stays reserved; press p again to resume."
+                    notice_until = time.time() + 6
+                elif key == "s":
+                    notice = "Stop training and save a checkpoint? Press s again to confirm, any other key to cancel."
+                    print("\033[2J\033[H" + render(run_dir, history, eval_history, pid, notice), flush=True)
+                    if (keys.poll(10.0) or "").lower() == "s":
+                        if process_state(pid) == "T":
+                            os.kill(pid, signal.SIGCONT)  # a stopped process cannot handle SIGINT
+                        os.kill(pid, signal.SIGINT)
+                        notice = "Stopping. The trainer is writing a checkpoint; rerun the same command to resume."
+                    else:
+                        notice = "Cancelled."
+                    notice_until = time.time() + 8
     except KeyboardInterrupt:
-        print("\nStopped watching. Training continues in the background.")
+        pass
+    print("\nStopped watching. Training is unaffected.")
 
 
 if __name__ == "__main__":
