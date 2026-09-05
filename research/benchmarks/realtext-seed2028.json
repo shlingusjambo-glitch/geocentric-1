@@ -1,0 +1,180 @@
+{
+  "args": {
+    "data": "runs/research-corpus/alice.jsonl",
+    "output": "runs/epicycle-realtext-seed2028",
+    "arms": [
+      "speed",
+      "baseline",
+      "capacity"
+    ],
+    "steps": 80,
+    "preset": null,
+    "vocab_size": 4000,
+    "block_size": 512,
+    "n_layer": 6,
+    "n_head": 4,
+    "n_kv_head": 2,
+    "n_embd": 256,
+    "batch_size": 2,
+    "accum": 1,
+    "learning_rate": 0.0006,
+    "eval_every": 20,
+    "val_fraction": 0.15,
+    "seed": 2028,
+    "overwrite": false,
+    "dtype": "auto",
+    "compile_mode": "off",
+    "num_workers": 0,
+    "render_only": false
+  },
+  "results": [
+    {
+      "arm": "speed",
+      "preset": "speed",
+      "wall_seconds": 6.4,
+      "steps": 80,
+      "final_loss": 4.853021621704102,
+      "eval_loss": 5.071036656697591,
+      "tokens_seen": 80896,
+      "tokens_per_second": 14762.089029971161,
+      "peak_memory_gb": 0.0,
+      "events": [
+        "step 1: depth 4/6",
+        "step 17: depth 5/6",
+        "step 33: depth 6/6",
+        "step 40: context 512"
+      ],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          5.967939297358195,
+          5.30876096089681,
+          5.122623920440674,
+          5.071036656697591
+        ],
+        "elapsed": [
+          1.25,
+          2.57,
+          4.15,
+          5.72
+        ]
+      },
+      "dir": "runs/epicycle-realtext-seed2028/speed"
+    },
+    {
+      "arm": "baseline",
+      "preset": "off",
+      "wall_seconds": 6.4,
+      "steps": 80,
+      "final_loss": 4.895606517791748,
+      "eval_loss": 5.100985685984294,
+      "tokens_seen": 80896,
+      "tokens_per_second": 15391.220498811834,
+      "peak_memory_gb": 0.0,
+      "events": [],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          5.965969403584798,
+          5.339111566543579,
+          5.164829651514689,
+          5.100985685984294
+        ],
+        "elapsed": [
+          1.46,
+          3.0,
+          4.55,
+          6.07
+        ]
+      },
+      "dir": "runs/epicycle-realtext-seed2028/baseline"
+    },
+    {
+      "arm": "capacity",
+      "preset": "capacity",
+      "wall_seconds": 5.9,
+      "steps": 80,
+      "final_loss": 4.754661560058594,
+      "eval_loss": 5.010579268137614,
+      "tokens_seen": 80896,
+      "tokens_per_second": 14071.62625484422,
+      "peak_memory_gb": 0.0,
+      "events": [
+        "step 1: depth 4/6",
+        "step 17: depth 5/6",
+        "step 33: depth 6/6",
+        "step 40: context 512"
+      ],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          6.082375129063924,
+          5.4023973147074384,
+          5.071439027786255,
+          5.010579268137614
+        ],
+        "elapsed": [
+          1.15,
+          2.48,
+          4.1,
+          5.7
+        ]
+      },
+      "dir": "runs/epicycle-realtext-seed2028/capacity"
+    }
+  ],
+  "memory": {
+    "n_params": 5745920,
+    "rows": [
+      {
+        "optimizer": "AdamW (fp32)",
+        "rings": "-",
+        "bytes": 45967360,
+        "bytes_per_param": 8.0
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 1,
+        "bytes": 34475520,
+        "bytes_per_param": 6.0,
+        "params_in_the_same_budget": 1.14
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 2,
+        "bytes": 23026176,
+        "bytes_per_param": 4.01,
+        "params_in_the_same_budget": 1.33
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 4,
+        "bytes": 17259008,
+        "bytes_per_param": 3.0,
+        "params_in_the_same_budget": 1.45
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 8,
+        "bytes": 14244352,
+        "bytes_per_param": 2.48,
+        "params_in_the_same_budget": 1.53
+      }
+    ]
+  }
+}

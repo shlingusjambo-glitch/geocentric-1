@@ -25,6 +25,10 @@ class GPTConfig:
     norm_eps: float = 1e-5
     model_name: str = "Geocentric"
     gradient_checkpointing: bool = False
+    # Sidecar dicts rather than nested dataclasses so a config round-trips through
+    # plain JSON and an older checkpoint that lacks them still loads.
+    watermark: Optional[dict] = None
+    vision: Optional[dict] = None
 
     def __post_init__(self) -> None:
         if self.n_kv_head is None:
@@ -33,6 +37,8 @@ class GPTConfig:
             raise ValueError(f"n_embd ({self.n_embd}) must be divisible by n_head ({self.n_head})")
         if self.n_head % self.n_kv_head != 0:
             raise ValueError(f"n_head ({self.n_head}) must be divisible by n_kv_head ({self.n_kv_head})")
+        if (self.n_embd // self.n_head) % 2:
+            raise ValueError("RoPE requires an even attention head dimension")
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
@@ -53,6 +59,8 @@ class GPTConfig:
             norm_eps=data.get("norm_eps", 1e-5),
             model_name=data.get("model_name", data.get("model_type", "Geocentric")),
             gradient_checkpointing=data.get("gradient_checkpointing", False),
+            watermark=data.get("watermark"),
+            vision=data.get("vision"),
         )
 
 
@@ -118,8 +126,12 @@ class CausalSelfAttention(nn.Module):
     where most of the memory and bandwidth cost of generation lives.
     """
 
-    def __init__(self, config: GPTConfig) -> None:
+    def __init__(self, config: GPTConfig, causal: bool = True) -> None:
         super().__init__()
+        # An image is not a sequence in time: a patch may attend to every other patch.
+        # Forcing causal masking on the vision tower would make the top-left patch
+        # blind to the rest of the picture.
+        self.causal = causal
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head or config.n_head
         self.head_dim = config.n_embd // config.n_head
@@ -157,10 +169,19 @@ class CausalSelfAttention(nn.Module):
 
         # is_causal is only correct when q and k have equal length. During cached
         # decoding a single query attends to the whole prefix, which is already causal.
-        is_causal = cache is None or t > 1
+        is_causal = self.causal and (cache is None or t > 1)
+        mask = None
+        if self.causal and cache is not None and k.size(2) > t and t > 1:
+            # SDPA's rectangular causal mask is upper-left aligned. A cached
+            # multi-token continuation needs the lower-right prefix offset.
+            prefix = k.size(2) - t
+            mask = torch.arange(k.size(2), device=x.device)[None, :] <= (
+                prefix + torch.arange(t, device=x.device)[:, None]
+            )
+            is_causal = False
         y = F.scaled_dot_product_attention(
             q, k, v,
-            attn_mask=None,
+            attn_mask=mask,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=is_causal,
         )
@@ -189,10 +210,10 @@ class SwiGLU(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, config: GPTConfig) -> None:
+    def __init__(self, config: GPTConfig, causal: bool = True) -> None:
         super().__init__()
         self.ln_1 = RMSNorm(config.n_embd, eps=config.norm_eps)
-        self.attn = CausalSelfAttention(config)
+        self.attn = CausalSelfAttention(config, causal=causal)
         self.ln_2 = RMSNorm(config.n_embd, eps=config.norm_eps)
         self.mlp = SwiGLU(config)
         self.gradient_checkpointing = config.gradient_checkpointing
@@ -253,6 +274,16 @@ class GeocentricGPT(nn.Module):
         self._rope_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
         self._rope_key: Optional[Tuple[int, str, torch.dtype]] = None
 
+        # Elastic depth (see geocentric/epicycle.py). None means "every block".
+        # Blocks past this index are skipped in the forward pass, so they receive no
+        # gradient and — because zero_grad(set_to_none=True) leaves their .grad at
+        # None — AdamW skips them entirely, weight decay included.
+        self.active_layers: Optional[int] = None
+        # Runtime-only setting; checkpoint architecture and default API stay intact.
+        self.loss_chunk_size = 0
+        # Optional vision tower, attached by geocentric.vision.attach_vision().
+        self.vision = None
+
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -279,30 +310,51 @@ class GeocentricGPT(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         caches: Optional[List[KVCache]] = None,
         position_offset: int = 0,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        images: Optional[torch.Tensor] = None,
+        loss_reduction: str = "mean",
+        return_logits: bool = True,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         b, t = input_ids.shape
         if position_offset + t > self.config.block_size:
             raise ValueError(
                 f"Sequence position {position_offset + t} exceeds block size {self.config.block_size}"
             )
 
-        x = self.dropout(self.token_embedding(input_ids))
+        x = self.token_embedding(input_ids)
+        if images is not None:
+            if self.vision is None:
+                raise ValueError("images= was passed but this checkpoint has no vision tower.")
+            x = self.vision.splice(x, input_ids, images)
+        x = self.dropout(x)
+
         cos_all, sin_all = self._rope(input_ids.device, torch.float32)
         cos = cos_all[position_offset : position_offset + t]
         sin = sin_all[position_offset : position_offset + t]
 
-        for i, block in enumerate(self.blocks):
+        depth = len(self.blocks) if self.active_layers is None else max(1, self.active_layers)
+        for i, block in enumerate(self.blocks[:depth]):
             x = block(x, cos, sin, caches[i] if caches is not None else None)
         x = self.ln_f(x)
 
         loss = None
-        if labels is not None:
+        if labels is not None and not return_logits and self.loss_chunk_size > 0:
+            from geocentric.streaming_loss import linear_cross_entropy
+
+            logits = None
+            loss = linear_cross_entropy(x, self.lm_head.weight, labels,
+                                        self.loss_chunk_size, loss_reduction)
+        elif labels is not None:
             logits = self.lm_head(x)
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)).float(),
                 labels.reshape(-1),
                 ignore_index=-100,
+                # "none" returns one loss per position, which is what lets EQUANT
+                # choose which tokens are worth a gradient. Shape (B*T,).
+                reduction=loss_reduction,
             )
+            if not return_logits:
+                logits = None
         else:
             # Inference only needs the last position's logits. Projecting the whole
             # sequence through a 32k-wide head is pure waste during generation.
@@ -327,6 +379,8 @@ class GeocentricGPT(nn.Module):
         eos_id: Optional[int] = None,
         repetition_penalty: float = 1.1,
         repetition_window: int = 128,
+        logits_processor=None,
+        images: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self.eval()
         caches = [KVCache() for _ in self.blocks]
@@ -346,7 +400,10 @@ class GeocentricGPT(nn.Module):
                 break
             if offset + cur.size(1) > self.config.block_size:
                 break
-            logits, _ = self(cur, caches=caches, position_offset=offset)
+            # Images only enter on the prefill pass; afterwards their patch states
+            # live in the KV cache and re-splicing them would double-count.
+            logits, _ = self(cur, caches=caches, position_offset=offset,
+                             images=images if offset == 0 else None)
             offset += cur.size(1)
             logits = logits[:, -1, :].float()
 
@@ -360,10 +417,16 @@ class GeocentricGPT(nn.Module):
                 )
                 logits.scatter_(1, recent, score)
 
+            if temperature > 0:
+                logits = logits / max(temperature, 1e-5)
+            # Applied after temperature so the watermark bias means the same thing
+            # at temp 0.3 and temp 1.2 — dividing it would silently weaken the mark.
+            if logits_processor is not None:
+                logits = logits_processor(logits, generated)
+
             if temperature <= 0:
                 next_id = torch.argmax(logits, dim=-1, keepdim=True)
             else:
-                logits = logits / max(temperature, 1e-5)
                 if top_k > 0:
                     values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                     logits = logits.masked_fill(logits < values[:, [-1]], -float("inf"))

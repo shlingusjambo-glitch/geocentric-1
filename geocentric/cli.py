@@ -17,6 +17,47 @@ BANNER = r"""
 """
 
 
+def _add_watermark_flags(p: argparse.ArgumentParser) -> None:
+    """Flags that decide whether the command asks about watermarking at all.
+
+    With none of them set, an interactive terminal gets asked and a pipe does not —
+    a training run started from a script must never block on a prompt nobody is
+    there to answer.
+    """
+    group = p.add_argument_group("watermarking")
+    group.add_argument("--watermark", action="store_true",
+                       help="Watermark output, identified by --modelver. Skips the prompt.")
+    group.add_argument("--watermark_identity", default=None, metavar="NAME",
+                       help="Watermark output and identify it as NAME. Skips the prompt.")
+    group.add_argument("--no_watermark", action="store_true",
+                       help="Do not watermark, and drop any inherited watermark. Skips the prompt.")
+    group.add_argument("--watermark_gamma", type=float, default=None,
+                       help="Green-list fraction (default 0.25).")
+    group.add_argument("--watermark_delta", type=float, default=None,
+                       help="Logit bias on green tokens (default 2.0). Higher is more "
+                            "detectable and costs more output quality.")
+    group.add_argument("--yes", "-y", action="store_true",
+                       help="Answer every interactive prompt with its default.")
+
+
+def _add_loss_guard_flags(p: argparse.ArgumentParser, resume: bool = True) -> None:
+    group = p.add_argument_group("loss stability")
+    group.add_argument("--no_loss_guard", action="store_true",
+                       help="Disable spike detection and rollback. The loss then rises "
+                            "wherever it rises and nothing intervenes.")
+    group.add_argument("--snapshot_every", type=int, default=200 if resume else 100,
+                       help="Steps between known-good weight snapshots kept in host RAM "
+                            "(4 bytes/param). 0 rolls back to the last saved checkpoint "
+                            "instead, which is free but loses more progress.")
+    if resume:
+        group.add_argument("--resume_from", default="auto", choices=["auto", "last", "best"],
+                           help="Which checkpoint a resumed run continues from. auto takes "
+                                "the best one only when the recorded loss says it is better.")
+        group.add_argument("--stop_on_divergence", action="store_true",
+                           help="Exit instead of rolling back when the loss has stayed above "
+                                "its best for hundreds of steps.")
+
+
 def _add_common_training_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
     p.add_argument("--batch_size", type=int, default=None)
@@ -25,6 +66,9 @@ def _add_common_training_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--gradient_checkpointing", action="store_true",
                    help="Trade ~30%% speed for a large memory saving. Use when you hit OOM.")
     p.add_argument("--compile", dest="compile_mode", default="auto", choices=["auto", "off"])
+    p.add_argument("--loss_chunk_size", type=int, default=None,
+                   help="Tokens per checkpointed vocabulary projection; 0 uses dense loss. "
+                        "Default: 256 for EPICYCLE memory/full/capacity; otherwise dense.")
     p.add_argument("--num_workers", type=int, default=None)
     p.add_argument("--modelver", default="Geocentric")
     p.add_argument("--overwrite_output_dir", action="store_true")
@@ -72,7 +116,14 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("--save_every", type=int, default=1000)
     pre.add_argument("--no_resume", action="store_true")
     pre.add_argument("--reprepare", action="store_true", help="Re-tokenize the corpus even if shards exist")
+    pre.add_argument("--epicycle", default="off",
+                     choices=["off", "speed", "quality", "memory", "full", "capacity"],
+                     help="EPICYCLE training gears. speed = elastic depth + context; "
+                          "quality = adds token selection; memory = adds rotating optimizer "
+                          "state so more parameters fit; full = everything.")
     _add_common_training_flags(pre)
+    _add_loss_guard_flags(pre)
+    _add_watermark_flags(pre)
 
     ft = sub.add_parser("sft", help="Instruction fine-tune a pretrained checkpoint")
     ft.add_argument("--model_dir", default="runs/geocentric")
@@ -83,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     ft.add_argument("--keep_overlong", action="store_true",
                     help="Truncate conversations longer than the context instead of dropping them")
     _add_common_training_flags(ft)
+    _add_loss_guard_flags(ft, resume=False)
+    _add_watermark_flags(ft)
 
     pl = sub.add_parser("pipeline", help="Pretrain then SFT in one command")
     pl.add_argument("--data_path", required=True)
@@ -97,7 +150,86 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Fine-tuning rate (default 1e-4). Independent of --learning_rate.")
     pl.add_argument("--max_steps", type=int, default=0)
     pl.add_argument("--doc_sep", default=None)
+    pl.add_argument("--epicycle", default="off",
+                    choices=["off", "speed", "quality", "memory", "full", "capacity"])
     _add_common_training_flags(pl)
+    _add_loss_guard_flags(pl)
+    _add_watermark_flags(pl)
+
+    vis = sub.add_parser("train-vision", help="Make a text model multimodal on image/text pairs")
+    vis.add_argument("--model_dir", default="runs/geocentric")
+    vis.add_argument("--vision_data_path", required=True,
+                     help=".json/.jsonl of {image, caption} or {image, messages} records")
+    vis.add_argument("--output_dir", default=None)
+    vis.add_argument("--image_root", default=None, help="Directory image paths are relative to")
+    vis.add_argument("--epochs", type=int, default=3)
+    vis.add_argument("--learning_rate", type=float, default=2e-4)
+    vis.add_argument("--projector_lr_multiplier", type=float, default=5.0,
+                     help="The projector is the only randomly-initialized bridge between two "
+                          "spaces; it needs a higher rate than the decoder.")
+    vis.add_argument("--image_size", type=int, default=224)
+    vis.add_argument("--patch_size", type=int, default=16)
+    vis.add_argument("--vision_layers", type=int, default=6)
+    vis.add_argument("--vision_width", type=int, default=384)
+    vis.add_argument("--vision_pool", type=int, default=2,
+                     help="Average-pool the patch grid NxN before projecting. 2 turns a 14x14 "
+                          "grid into 49 image tokens instead of 196.")
+    vis.add_argument("--freeze_lm", action="store_true",
+                     help="Train only the vision tower and projector, leaving the language "
+                          "model untouched. The usual stage-1 pass.")
+    vis.add_argument("--batch_size", type=int, default=4)
+    vis.add_argument("--gradient_accumulation_steps", type=int, default=8)
+    vis.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
+    vis.add_argument("--loss_chunk_size", type=int, default=0)
+    vis.add_argument("--num_workers", type=int, default=None)
+    vis.add_argument("--modelver", default="Geocentric")
+    _add_watermark_flags(vis)
+
+    bench = sub.add_parser("bench", aliases=["parallax"],
+                           help="Run the PARALLAX benchmark suite and write a Markdown report")
+    bench.add_argument("--model_dir", default="runs/geocentric")
+    bench.add_argument("--output", default=None,
+                       help="Where to write the report (default <model_dir>/PARALLAX.md)")
+    bench.add_argument("--eval_text", default=None,
+                       help="Path to your own held-out text. Strongly preferred over the "
+                            "bundled probes, which are only a few kilobytes.")
+    bench.add_argument("--vision_data", default=None,
+                       help="Held-out image/text pairs, for the PRISM grounding probe")
+    bench.add_argument("--only", nargs="+", default=None, metavar="PROBE",
+                       help="Run only these probes: ZENITH MERIDIAN SEXTANT ASTROLABE NADIR "
+                            "ORBIT PRISM")
+    bench.add_argument("--checkpoint", default=None)
+    bench.add_argument("--nadir_tokens", type=int, default=128)
+    bench.add_argument("--quiet", action="store_true", help="Write the report, print nothing")
+
+    rel = sub.add_parser("release", help="Package a checkpoint for public release")
+    rel.add_argument("--model_dir", default="runs/geocentric")
+    rel.add_argument("--output_dir", required=True)
+    rel.add_argument("--checkpoint", default=None)
+    rel.add_argument("--license", dest="license_name", default="",
+                     help="Licence to state in the model card, e.g. apache-2.0")
+    rel.add_argument("--description", default="", help="One-line description for the model card")
+    rel.add_argument("--no_benchmark", action="store_true",
+                     help="Skip PARALLAX. The model card then makes no quality claim.")
+    rel.add_argument("--eval_text", default=None)
+    rel.add_argument("--vision_data", default=None)
+    rel.add_argument("--overwrite", action="store_true")
+    _add_watermark_flags(rel)
+
+    det = sub.add_parser("detect", help="Test whether text carries a Geocentric watermark")
+    det.add_argument("--text", default=None, help="Text to test. Omit to read stdin.")
+    det.add_argument("--file", default=None, help="File to test")
+    det.add_argument("--identity", nargs="+", default=None, metavar="NAME",
+                     help="Identities to test against. Defaults to the model_dir's own.")
+    det.add_argument("--model_dir", default="runs/geocentric",
+                     help="Supplies the tokenizer, and the default identity")
+    det.add_argument("--z_threshold", type=float, default=4.0)
+    det.add_argument("--no_capacity", action="store_true",
+                     help="Skip the capacity check. That check loads the model to explain a "
+                          "negative result, and is the difference between 'no watermark' and "
+                          "'this text was too predictable to carry one'.")
+    det.add_argument("--gamma", type=float, default=0.25)
+    det.add_argument("--delta", type=float, default=2.0)
 
     ch = sub.add_parser("chat", aliases=["try"], help="Test a checkpoint interactively")
     ch.add_argument("--model_dir", default="runs/geocentric")
@@ -108,6 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("--min_p", type=float, default=0.05)
     ch.add_argument("--repetition_penalty", type=float, default=1.1)
     ch.add_argument("--system", default=None)
+    ch.add_argument("--image", default=None,
+                    help="Image to attach to the first turn (multimodal checkpoints only)")
     ch.add_argument("--mode", default="auto", choices=["auto", "chat", "base"],
                     help="auto picks chat for an instruction-tuned checkpoint and raw "
                          "continuation for a pretrained-only one")
@@ -118,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--max_new_tokens", type=int, default=256)
     gen.add_argument("--temperature", type=float, default=0.8)
     gen.add_argument("--raw", action="store_true", help="Force raw completion, no chat template")
+    gen.add_argument("--image", default=None, help="Image to condition on (multimodal only)")
 
     pc = sub.add_parser("plan", help="Show the architecture and token budget for a parameter target")
     pc.add_argument("--preset", default="120m")
@@ -166,8 +301,16 @@ def _auto_batch(args: argparse.Namespace, dims: dict[str, Any]) -> tuple[int, in
     return 0, args.gradient_accumulation_steps or 0
 
 
-def _run_pretrain(args: argparse.Namespace) -> None:
+def _run_pretrain(args: argparse.Namespace, watermark=None) -> None:
     from geocentric.train_pretrain import pretrain
+    from geocentric.watermark import resolve_watermark
+
+    if watermark is None and not getattr(args, "_watermark_resolved", False):
+        watermark, _ = resolve_watermark(
+            args, args.modelver,
+            context="this model is being trained from scratch, so now is the moment to "
+                    "decide how its output should be attributed",
+        )
 
     dims = _dims_from_args(args)
     batch, accum = _auto_batch(args, dims)
@@ -204,11 +347,30 @@ def _run_pretrain(args: argparse.Namespace) -> None:
         compile_mode=args.compile_mode,
         resume=not args.no_resume,
         force_reprepare=args.reprepare,
+        epicycle=getattr(args, "epicycle", "off"),
+        watermark=watermark,
+        loss_guard=not getattr(args, "no_loss_guard", False),
+        resume_from=getattr(args, "resume_from", "auto"),
+        snapshot_every=getattr(args, "snapshot_every", 200),
+        stop_on_divergence=getattr(args, "stop_on_divergence", False),
+        loss_chunk_size=getattr(args, "loss_chunk_size", None),
     )
 
 
-def _run_sft(args: argparse.Namespace) -> None:
+def _run_sft(args: argparse.Namespace, watermark=None, drop_watermark: bool = False) -> None:
     from geocentric.train_sft import sft
+    from geocentric.watermark import WatermarkConfig, resolve_watermark
+
+    if watermark is None and not drop_watermark and not getattr(args, "_watermark_resolved", False):
+        existing = WatermarkConfig.load(args.model_dir)
+        watermark, drop_watermark = resolve_watermark(
+            args, args.modelver,
+            context="fine-tuning inherits the pretrained checkpoint's watermark; change or "
+                    "remove it here if this is a different model to the world",
+            existing=existing,
+        )
+        if existing is not None and watermark is existing:
+            watermark = None  # unchanged: let the checkpoint's own config carry it
 
     sft(
         model_dir=args.model_dir,
@@ -226,11 +388,27 @@ def _run_sft(args: argparse.Namespace) -> None:
         num_workers=args.num_workers,
         compile_mode=args.compile_mode,
         drop_overlong=not args.keep_overlong,
+        watermark=watermark,
+        drop_watermark=drop_watermark,
+        loss_guard=not getattr(args, "no_loss_guard", False),
+        snapshot_every=getattr(args, "snapshot_every", 100),
+        loss_chunk_size=getattr(args, "loss_chunk_size", None) or 0,
     )
 
 
 def _run_pipeline(args: argparse.Namespace) -> None:
+    from geocentric.watermark import resolve_watermark
+
+    # Asked once for the whole pipeline. Being prompted twice for the same decision,
+    # an hour apart, is how a run ends up half-marked.
+    watermark, _ = resolve_watermark(
+        args, args.modelver,
+        context="this pipeline trains a model from scratch and then instruction-tunes it; "
+                "the answer applies to both stages",
+    )
+
     pre_args = argparse.Namespace(**vars(args))
+    pre_args._watermark_resolved = True
     pre_args.tokenizer_path = None
     pre_args.eval_every = 500
     pre_args.save_every = 1000
@@ -238,9 +416,10 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     pre_args.reprepare = False
     pre_args.dropout = 0.0
     pre_args.warmup_ratio = 0.01
-    _run_pretrain(pre_args)
+    _run_pretrain(pre_args, watermark=watermark)
 
     sft_args = argparse.Namespace(**vars(args))
+    sft_args._watermark_resolved = True
     sft_args.model_dir = args.output_dir
     sft_args.output_dir = args.output_dir
     sft_args.epochs = args.sft_epochs
@@ -252,7 +431,12 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     sft_args.learning_rate = args.sft_learning_rate
     # Accumulation is sized for packed pretraining windows; SFT batches are shorter.
     sft_args.gradient_accumulation_steps = None
-    _run_sft(sft_args)
+    # SFT runs are short, so snapshot more often — but 0 means "off" and must stay off.
+    pretrain_snapshot = getattr(args, "snapshot_every", 200)
+    sft_args.snapshot_every = 0 if pretrain_snapshot == 0 else min(100, pretrain_snapshot)
+    # The pretrained checkpoint already carries the mark; passing it again would only
+    # rewrite the same file.
+    _run_sft(sft_args, watermark=None)
 
 
 def _run_chat(args: argparse.Namespace) -> None:
@@ -276,12 +460,17 @@ def _run_chat(args: argparse.Namespace) -> None:
         pass
 
     model, tokenizer, stage = load_model_and_tokenizer(args.model_dir, with_stage=True)
-    mode = args.mode if args.mode != "auto" else ("chat" if stage == "sft" else "base")
+    mode = args.mode if args.mode != "auto" else ("chat" if stage in ("sft", "vision") else "base")
+    images, image_prefix = _load_chat_image(model, args.image)
 
     print(BANNER)
     print(f"{model.config.model_name} | {model.num_params():,} params | ctx {model.config.block_size}")
     print(f"checkpoint: {stage}  ->  {mode} mode")
     print()
+    if model.config.watermark:
+        print(f"  output is watermarked as {model.config.watermark.get('identity')!r}")
+    if images is not None:
+        print(f"  image attached: {args.image}")
     if mode == "base":
         print("  Base model: no instruction tuning yet, so there is no system prompt and")
         print("  no chat roles. Type the start of a passage and it continues the text.")
@@ -327,21 +516,26 @@ def _run_chat(args: argparse.Namespace) -> None:
         if line.startswith("/system "):
             system = line[len("/system "):].strip()
             history = []
-            print(f"System prompt set; history cleared.\n" if mode == "chat"
+            print("System prompt set; history cleared.\n" if mode == "chat"
                   else "Base models ignore the system prompt.\n")
             continue
 
         if mode == "chat":
-            history.append({"role": "user", "content": line})
+            # The placeholders go on the first turn only: after that the picture is
+            # in the KV cache and in the conversation history.
+            content = f"{image_prefix}{line}" if (images is not None and not history) else line
+            history.append({"role": "user", "content": content})
             prompt = build_chat_prompt(history, system=system)
         else:
             # Feed the raw text back so the model continues rather than answers.
-            prompt = line
+            prompt = f"{image_prefix}{line}" if images is not None else line
 
         print(reply_label, end="", flush=True)
         chunks: list[str] = []
+        # Passed on every turn, not just the first: the placeholders stay in the
+        # rendered history, so the splice has to keep having something to put there.
         try:
-            for piece in stream_text(model, tokenizer, prompt, **sampling):
+            for piece in stream_text(model, tokenizer, prompt, images=images, **sampling):
                 chunks.append(piece)
                 print(piece, end="", flush=True)
         except KeyboardInterrupt:
@@ -357,14 +551,213 @@ def _run_generate(args: argparse.Namespace) -> None:
     from geocentric.generate import build_chat_prompt, generate_text
 
     model, tokenizer, stage = load_model_and_tokenizer(args.model_dir, with_stage=True)
+    images, image_prefix = _load_chat_image(model, args.image)
     # Same reasoning as chat: only an instruction-tuned checkpoint gets the template.
-    use_raw = args.raw or stage != "sft"
-    prompt = args.prompt if use_raw else build_chat_prompt([{"role": "user", "content": args.prompt}])
+    use_raw = args.raw or stage not in ("sft", "vision")
+    text = f"{image_prefix}{args.prompt}" if images is not None else args.prompt
+    prompt = text if use_raw else build_chat_prompt([{"role": "user", "content": text}])
     print(generate_text(
         model, tokenizer, prompt,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        images=images,
     ))
+
+
+def _load_chat_image(model, path):
+    """Return (image batch, placeholder prefix) for an optional --image."""
+    if not path:
+        return None, ""
+    if not model.config.vision:
+        print(f"Ignoring --image: {model.config.model_name} has no vision tower. "
+              "Train one with `geocentric train-vision`.")
+        return None, ""
+
+    from geocentric.vision import VisionConfig, image_placeholder, load_image
+
+    vision = VisionConfig.from_dict(model.config.vision)
+    device = next(model.parameters()).device
+    tensor = load_image(path, vision.image_size).unsqueeze(0).to(device)
+    return tensor, image_placeholder(vision) + "\n"
+
+
+def _run_train_vision(args: argparse.Namespace) -> None:
+    from geocentric.train_vision import train_vision
+    from geocentric.watermark import WatermarkConfig, resolve_watermark
+
+    watermark, _ = resolve_watermark(
+        args, args.modelver,
+        context="adding vision does not change who made the model, but it is a new "
+                "checkpoint and a new chance to set the attribution",
+        existing=WatermarkConfig.load(args.model_dir),
+    )
+    train_vision(
+        model_dir=args.model_dir,
+        vision_data_path=args.vision_data_path,
+        output_dir=args.output_dir,
+        image_root=args.image_root,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        learning_rate=args.learning_rate,
+        projector_lr_multiplier=args.projector_lr_multiplier,
+        image_size=args.image_size,
+        patch_size=args.patch_size,
+        vision_layers=args.vision_layers,
+        vision_width=args.vision_width,
+        vision_pool=args.vision_pool,
+        loss_chunk_size=args.loss_chunk_size,
+        freeze_lm=args.freeze_lm,
+        dtype_name=args.dtype,
+        modelver=args.modelver,
+        num_workers=args.num_workers,
+        watermark=watermark,
+    )
+
+
+def _run_bench(args: argparse.Namespace) -> None:
+    from geocentric.parallax import run_parallax, write_report
+
+    result = run_parallax(
+        args.model_dir, eval_text=args.eval_text, vision_data=args.vision_data,
+        only=args.only, checkpoint_name=args.checkpoint, nadir_tokens=args.nadir_tokens,
+    )
+    output = Path(args.output) if args.output else Path(args.model_dir) / "PARALLAX.md"
+    path = write_report(result, output)
+
+    if args.quiet:
+        print(path)
+        return
+
+    print()
+    print(f"  PARALLAX {result.version} — {result.model_name} ({result.stage})")
+    print(f"  {'-' * 62}")
+    for probe in result.probes:
+        score = f"{probe.score:5.1f}" if probe.score is not None else "    —"
+        bar = "" if probe.score is None else (
+            "█" * int(round(20 * probe.score / 100)) + "░" * (20 - int(round(20 * probe.score / 100)))
+        )
+        print(f"  {probe.name:<10} {score}  {bar:<20}  {probe.headline}")
+    print(f"  {'-' * 62}")
+    print(f"  Parallax Index: {result.index:.1f} / 100")
+    print(f"\n  Report: {path}")
+    print(f"  Data:   {path.with_suffix('.json')}")
+
+
+def _run_release(args: argparse.Namespace) -> None:
+    from geocentric.release import release
+    from geocentric.watermark import WatermarkConfig, resolve_watermark
+
+    existing = WatermarkConfig.load(args.model_dir)
+    default_identity = existing.identity if existing else Path(args.model_dir).resolve().name
+    watermark, removed = resolve_watermark(
+        args, default_identity,
+        context="this is the last point at which attribution can be added. Once the "
+                "weights are published, output from them can never be marked.",
+        existing=existing,
+    )
+    release(
+        model_dir=args.model_dir,
+        output_dir=args.output_dir,
+        watermark=watermark,
+        remove_watermark=removed or bool(args.no_watermark),
+        checkpoint_name=args.checkpoint,
+        license_name=args.license_name,
+        description=args.description,
+        benchmark=not args.no_benchmark,
+        eval_text=args.eval_text,
+        vision_data=args.vision_data,
+        overwrite=args.overwrite,
+    )
+
+
+def _run_detect(args: argparse.Namespace) -> None:
+    from geocentric.checkpoint import find_tokenizer_path
+    from geocentric.tokenizer_train import load_tokenizer
+    from geocentric.watermark import MIN_SCORED_TOKENS, WatermarkConfig, detect_best
+
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+    elif args.text:
+        text = args.text
+    else:
+        text = sys.stdin.read()
+    if not text.strip():
+        print("Nothing to test. Pass --text, --file, or pipe text in on stdin.")
+        sys.exit(1)
+
+    identities = list(args.identity or [])
+    if not identities:
+        existing = WatermarkConfig.load(args.model_dir)
+        if existing is None:
+            print(f"No --identity given and no watermark.json in {args.model_dir}. "
+                  "Pass --identity with the name(s) to test against.")
+            sys.exit(1)
+        identities = [existing.identity]
+        args.gamma, args.delta = existing.gamma, existing.delta
+
+    tokenizer = load_tokenizer(find_tokenizer_path(args.model_dir))
+    candidates = [WatermarkConfig(identity=name, gamma=args.gamma, delta=args.delta)
+                  for name in identities]
+    results = detect_best(text, tokenizer, candidates, z_threshold=args.z_threshold)
+
+    print()
+    print(f"  {'identity':<34} {'z':>7} {'p':>10}  {'green':>13}")
+    print(f"  {'-' * 68}")
+    for r in results:
+        flag = "  <-- watermarked" if r.watermarked else ""
+        print(f"  {r.identity[:34]:<34} {r.z_score:7.2f} {r.p_value:10.3g}  "
+              f"{r.green_tokens:5d}/{r.scored_tokens:<5d}{flag}")
+    print()
+
+    best = results[0]
+    if best.scored_tokens < MIN_SCORED_TOKENS:
+        print(f"  UNDECIDABLE — {best.scored_tokens} scored tokens, the test needs at least "
+              f"{MIN_SCORED_TOKENS}.")
+    elif best.watermarked:
+        print(f"  WATERMARKED as {best.identity!r} (z={best.z_score:.2f}, p={best.p_value:.3g}).")
+        if len(results) > 1:
+            print(f"  Next closest identity scored z={results[1].z_score:.2f}, which is noise.")
+    else:
+        print(f"  No watermark detected under {'this identity' if len(results) == 1 else 'any of these identities'} "
+              f"(best z={best.z_score:.2f}, threshold {args.z_threshold}).")
+        print("  A z near zero means either no watermark, a different identity, text that has "
+              "been rewritten — or text the model was too certain about to mark.")
+        _explain_negative(args, text, candidates[0])
+    sys.exit(0 if best.watermarked else 2)
+
+
+def _explain_negative(args, text: str, config) -> None:
+    """Tell a negative result apart from a mark that never had room to exist.
+
+    Reporting "not watermarked" for text a watermarked model genuinely produced is the
+    worst failure this tool can have, and it happens whenever the model was certain
+    about most of its tokens. It costs one forward pass to say which case this is.
+    """
+    if args.no_capacity:
+        return
+    try:
+        from geocentric.checkpoint import load_model_and_tokenizer
+        from geocentric.watermark import watermark_capacity
+
+        model, tokenizer = load_model_and_tokenizer(args.model_dir)
+    except Exception as exc:
+        print(f"  (capacity check skipped: {exc})")
+        return
+    if not model.config.watermark:
+        print(f"  The model in {args.model_dir} is not watermarked either, so text it "
+              "generated was never marked.")
+        return
+
+    report = watermark_capacity(model, tokenizer, text, config)
+    print()
+    print(f"  Capacity of this model on this text ({report.scored_positions} positions):")
+    print(f"    influenceable positions   {report.influenceable_fraction:.1%}")
+    print(f"    median predictive entropy {report.median_entropy:.4f} nats")
+    print(f"    expected z per sqrt(token) {report.expected_z_per_sqrt_token:.4f}")
+    if report.tokens_for_decisive_z:
+        print(f"    tokens needed for z=4     ~{report.tokens_for_decisive_z:,}")
+    print(f"  {report.verdict(config.gamma)}")
 
 
 def _run_plan(args: argparse.Namespace) -> None:
@@ -438,6 +831,14 @@ def main() -> None:
         _run_sft(args)
     elif args.command == "pipeline":
         _run_pipeline(args)
+    elif args.command == "train-vision":
+        _run_train_vision(args)
+    elif args.command in ("bench", "parallax"):
+        _run_bench(args)
+    elif args.command == "release":
+        _run_release(args)
+    elif args.command == "detect":
+        _run_detect(args)
     elif args.command in ("chat", "try"):
         _run_chat(args)
     elif args.command == "generate":

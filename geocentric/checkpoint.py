@@ -40,11 +40,18 @@ def save_checkpoint(
         "config": vars(model.config).copy(),
         "step": step,
     }
+    if hasattr(model, "_epicycle_state"):
+        payload["epicycle_state"] = model._epicycle_state
+    if hasattr(model, "_training_tokens"):
+        payload["tokens_seen"] = model._training_tokens
+    if hasattr(model, "_grad_scaler"):
+        payload["grad_scaler"] = model._grad_scaler.state_dict()
     # Optimizer state makes a resumed run continue with its real Adam moments and
     # schedule position instead of restarting the optimizer from zero, which
     # previously threw away progress on every interruption.
     if optimizer is not None:
         payload["optimizer"] = optimizer.state_dict()
+        payload["optimizer_type"] = type(optimizer).__name__
     if extra:
         payload.update(extra)
 
@@ -60,19 +67,26 @@ def _find_checkpoint(model_dir: Path, checkpoint_name: Optional[str]) -> Path:
         candidate = model_dir / checkpoint_name
         if candidate.exists():
             return candidate
-    # Prefer a finished SFT model, then the best pretrained, then anything else.
-    for pattern in ("*_sft_best.pt", "*_sft.pt", "*_pretrained_best.pt", "*_pretrained.pt", "*.pt"):
+    # Most-derived first: a vision checkpoint contains the SFT weights it was built on,
+    # and an SFT checkpoint contains the pretrained ones.
+    for pattern in ("*_vision_best.pt", "*_vision.pt", "*_sft_best.pt", "*_sft.pt",
+                    "*_pretrained_best.pt", "*_pretrained.pt", "*.pt"):
         matches = sorted(model_dir.glob(pattern))
         if matches:
             return matches[0]
     raise FileNotFoundError(f"No checkpoint (.pt) found in {model_dir}")
 
 
-def checkpoint_stage(model_dir: str | Path, checkpoint_name: Optional[str] = None) -> str:
-    """Return "sft" or "pretrained" for the checkpoint that would be loaded.
+STAGES = ("vision", "sft", "pretrained")
 
-    Prefers the stage recorded inside the checkpoint; falls back to the filename
-    for checkpoints written before that field existed.
+
+def checkpoint_stage(model_dir: str | Path, checkpoint_name: Optional[str] = None) -> str:
+    """Return "vision", "sft" or "pretrained" for the checkpoint that would be loaded.
+
+    Prefers the stage recorded inside the checkpoint; falls back to the filename for
+    checkpoints written before that field existed. "vision" implies instruction-tuned:
+    vision training runs on chat-formatted image conversations, so those checkpoints
+    take the chat path everywhere "sft" does.
     """
     try:
         path = _find_checkpoint(Path(model_dir), checkpoint_name)
@@ -81,11 +95,14 @@ def checkpoint_stage(model_dir: str | Path, checkpoint_name: Optional[str] = Non
     try:
         payload = torch.load(path, map_location="cpu", weights_only=False)
         stage = payload.get("stage")
-        if stage in {"sft", "pretrained"}:
+        if stage in STAGES:
             return stage
     except Exception:
         pass
-    return "sft" if "_sft" in path.name else "pretrained"
+    for stage in STAGES:
+        if f"_{stage}" in path.name:
+            return stage
+    return "pretrained"
 
 
 def load_checkpoint(
@@ -104,6 +121,13 @@ def load_checkpoint(
         config = GPTConfig.load(Path(model_dir) / "config.json")
 
     model = GeocentricGPT(config)
+    if config.vision:
+        # Build the tower first or every "vision.*" key lands in `unexpected` and the
+        # architecture-mismatch guard below rejects a perfectly good checkpoint.
+        from geocentric.vision import VisionConfig, VisionTower
+
+        vision_config = VisionConfig.from_dict(config.vision)
+        model.vision = VisionTower(vision_config, config.n_embd)
     state = payload.get("model", payload)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
@@ -114,7 +138,16 @@ def load_checkpoint(
             "LayerNorm and a GELU MLP; they cannot be loaded into the current model. Retrain from scratch."
         )
     model = model.to(device=device, dtype=dtype if dtype != torch.float16 else torch.float32)
+    model._epicycle_state = payload.get("epicycle_state")
+    model._training_tokens = payload.get("tokens_seen")
+    model._grad_scaler_state = payload.get("grad_scaler")
+    model._checkpoint_loss = payload.get("loss")
     print(f"Loaded checkpoint {path.name} (step {payload.get('step', 0):,})")
+    if config.watermark:
+        print(f"  watermarked as {config.watermark.get('identity')!r}")
+    if config.vision:
+        print(f"  multimodal: vision tower attached "
+              f"({config.vision.get('image_size')}px, {config.vision.get('n_layer')} layers)")
     return model
 
 
@@ -125,10 +158,17 @@ def load_optimizer_state(model_dir: str | Path, checkpoint_name: Optional[str], 
         return 0
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if "optimizer" in payload:
+        saved_type = payload.get("optimizer_type")
+        if saved_type is None:
+            states = payload["optimizer"].get("state", {}).values()
+            saved_type = "RingAdamW" if any("ring" in s for s in states) else "AdamW"
+        if saved_type != type(optimizer).__name__:
+            raise ValueError(f"Cannot resume {saved_type} state with {type(optimizer).__name__}; "
+                             "use the original optimizer/EPICYCLE preset")
         try:
             optimizer.load_state_dict(payload["optimizer"])
         except Exception as exc:
-            print(f"Could not restore optimizer state ({exc}); continuing with a fresh optimizer.")
+            raise RuntimeError(f"Could not restore optimizer state: {exc}") from exc
     return int(payload.get("step", 0))
 
 

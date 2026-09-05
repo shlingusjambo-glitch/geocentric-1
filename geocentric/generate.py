@@ -7,6 +7,20 @@ import torch
 from geocentric.chat import DEFAULT_SYSTEM, EOT, normalize_messages, render_chat
 from geocentric.model import GeocentricGPT
 from geocentric.tokenizer_train import token_id
+from geocentric.watermark import WatermarkConfig, WatermarkProcessor
+
+
+def make_processor(model: GeocentricGPT, watermark: Optional[WatermarkConfig] = None):
+    """Build the logit processor for a model, defaulting to its own baked-in mark.
+
+    A watermark that has to be requested at call time is a watermark that gets
+    forgotten. The identity travels inside the checkpoint config, so any code path
+    that generates from a marked model marks its output without being asked.
+    """
+    config = watermark or WatermarkConfig.from_dict(getattr(model.config, "watermark", None))
+    if config is None or not config.enabled:
+        return None
+    return WatermarkProcessor(config, model.config.vocab_size)
 
 
 def _stop_ids(tokenizer) -> List[int]:
@@ -39,6 +53,8 @@ def generate_text(
     min_p: float = 0.05,
     repetition_penalty: float = 1.1,
     device: Optional[torch.device] = None,
+    watermark: Optional[WatermarkConfig] = None,
+    images: Optional[torch.Tensor] = None,
 ) -> str:
     device = device or next(model.parameters()).device
     model.eval()
@@ -58,6 +74,8 @@ def generate_text(
         min_p=min_p,
         eos_id=stops[0] if stops else None,
         repetition_penalty=repetition_penalty,
+        logits_processor=make_processor(model, watermark),
+        images=images,
     )
     new_ids = output[0, len(ids) :].tolist()
     for stop in stops:
@@ -78,6 +96,8 @@ def stream_text(
     min_p: float = 0.05,
     repetition_penalty: float = 1.1,
     device: Optional[torch.device] = None,
+    watermark: Optional[WatermarkConfig] = None,
+    images: Optional[torch.Tensor] = None,
 ) -> Iterator[str]:
     """Yield decoded text incrementally, reusing the KV cache between tokens."""
     from geocentric.model import KVCache
@@ -89,6 +109,7 @@ def stream_text(
     stops = set(_stop_ids(tokenizer))
     caches = [KVCache() for _ in model.blocks]
 
+    processor = make_processor(model, watermark)
     cur = torch.tensor([ids], dtype=torch.long, device=device)
     offset = 0
     produced: List[int] = []
@@ -97,7 +118,8 @@ def stream_text(
     for _ in range(max_new_tokens):
         if offset + cur.size(1) > model.config.block_size:
             break
-        logits, _ = model(cur, caches=caches, position_offset=offset)
+        logits, _ = model(cur, caches=caches, position_offset=offset,
+                          images=images if offset == 0 else None)
         offset += cur.size(1)
         logits = logits[:, -1, :].float()
 
@@ -107,10 +129,16 @@ def stream_text(
             score = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
             logits.scatter_(1, history, score)
 
+        if temperature > 0:
+            logits = logits / max(temperature, 1e-5)
+        if processor is not None:
+            # The green list is keyed on the tokens actually in the stream, prompt
+            # included — the same view the detector reconstructs from the text.
+            processor(logits, torch.tensor([ids + produced], device=device))
+
         if temperature <= 0:
             next_id = int(torch.argmax(logits, dim=-1))
         else:
-            logits = logits / max(temperature, 1e-5)
             if top_k > 0:
                 values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits = logits.masked_fill(logits < values[:, [-1]], -float("inf"))

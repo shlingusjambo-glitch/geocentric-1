@@ -67,3 +67,37 @@ Rules:
 The validation split is the **end** of the token stream, not random windows, so
 documents cannot leak between train and eval. Delete the folder or pass
 `--reprepare` to re-tokenize after changing the corpus or tokenizer.
+
+---
+
+## Image/text pairs (`geocentric train-vision`)
+
+`.json` or `.jsonl`, one record per image. Any of these shapes:
+
+```json
+{"image": "cat.jpg", "caption": "A cat asleep on a sofa."}
+{"image": "chart.png", "instruction": "What does this show?", "output": "Quarterly revenue."}
+{"image": "x.jpg", "messages": [{"role": "user", "content": "What is this?"},
+                                {"role": "assistant", "content": "A bicycle."}]}
+{"images": ["a.jpg", "b.jpg"], "messages": [...]}
+```
+
+Image paths resolve against the data file's own directory first, then `--image_root`,
+then the working directory — which is how caption sets are actually laid out on disk.
+A record whose image cannot be found is counted and reported, not silently dropped;
+if *every* record is missing its image the run fails immediately rather than training
+a vision tower on nothing.
+
+A `caption` with no instruction gets one of three rotating prompts ("Describe this
+image.", "What is in this picture?", "Caption this image.") so the model learns to
+answer the question rather than to emit a caption whenever it sees a picture.
+
+Placeholder tokens are inserted for you at the head of the first user turn, one run of
+`<|image|>` per image. How many depends on the geometry: at `--image_size 224
+--patch_size 16 --vision_pool 2` it is 49 tokens per image, so a conversation with one
+picture spends 49 of its context before any text. Conversations that no longer fit in
+`block_size` are dropped and counted, for the same reason overlong SFT conversations
+are: truncating one cuts the answer mid-sentence and removes its stop token.
+
+Only the assistant's turns contribute to the loss. The image placeholders sit in the
+user turn and are masked out.

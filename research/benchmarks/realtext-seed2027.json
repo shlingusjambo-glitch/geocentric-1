@@ -1,0 +1,180 @@
+{
+  "args": {
+    "data": "runs/research-corpus/alice.jsonl",
+    "output": "runs/epicycle-realtext-seed2027",
+    "arms": [
+      "capacity",
+      "speed",
+      "baseline"
+    ],
+    "steps": 80,
+    "preset": null,
+    "vocab_size": 4000,
+    "block_size": 512,
+    "n_layer": 6,
+    "n_head": 4,
+    "n_kv_head": 2,
+    "n_embd": 256,
+    "batch_size": 2,
+    "accum": 1,
+    "learning_rate": 0.0006,
+    "eval_every": 20,
+    "val_fraction": 0.15,
+    "seed": 2027,
+    "overwrite": false,
+    "dtype": "auto",
+    "compile_mode": "off",
+    "num_workers": 0,
+    "render_only": false
+  },
+  "results": [
+    {
+      "arm": "capacity",
+      "preset": "capacity",
+      "wall_seconds": 6.6,
+      "steps": 80,
+      "final_loss": 4.766531467437744,
+      "eval_loss": 5.0317989985148115,
+      "tokens_seen": 80896,
+      "tokens_per_second": 13731.454748193059,
+      "peak_memory_gb": 0.0,
+      "events": [
+        "step 1: depth 4/6",
+        "step 17: depth 5/6",
+        "step 33: depth 6/6",
+        "step 40: context 512"
+      ],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          6.212445815404256,
+          5.319066127141316,
+          5.096261978149414,
+          5.0317989985148115
+        ],
+        "elapsed": [
+          1.39,
+          2.76,
+          4.39,
+          6.02
+        ]
+      },
+      "dir": "runs/epicycle-realtext-seed2027/capacity"
+    },
+    {
+      "arm": "speed",
+      "preset": "speed",
+      "wall_seconds": 5.8,
+      "steps": 80,
+      "final_loss": 4.771783351898193,
+      "eval_loss": 5.068111499150594,
+      "tokens_seen": 80896,
+      "tokens_per_second": 15193.307503264892,
+      "peak_memory_gb": 0.0,
+      "events": [
+        "step 1: depth 4/6",
+        "step 17: depth 5/6",
+        "step 33: depth 6/6",
+        "step 40: context 512"
+      ],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          6.028440237045288,
+          5.298984527587891,
+          5.117782195409139,
+          5.068111499150594
+        ],
+        "elapsed": [
+          1.05,
+          2.33,
+          3.89,
+          5.43
+        ]
+      },
+      "dir": "runs/epicycle-realtext-seed2027/speed"
+    },
+    {
+      "arm": "baseline",
+      "preset": "off",
+      "wall_seconds": 6.4,
+      "steps": 80,
+      "final_loss": 4.86719274520874,
+      "eval_loss": 5.093900283177693,
+      "tokens_seen": 80896,
+      "tokens_per_second": 15380.879543980982,
+      "peak_memory_gb": 0.0,
+      "events": [],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          6.122280836105347,
+          5.371894518534343,
+          5.168864170710246,
+          5.093900283177693
+        ],
+        "elapsed": [
+          1.46,
+          2.99,
+          4.55,
+          6.08
+        ]
+      },
+      "dir": "runs/epicycle-realtext-seed2027/baseline"
+    }
+  ],
+  "memory": {
+    "n_params": 5745920,
+    "rows": [
+      {
+        "optimizer": "AdamW (fp32)",
+        "rings": "-",
+        "bytes": 45967360,
+        "bytes_per_param": 8.0
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 1,
+        "bytes": 34475520,
+        "bytes_per_param": 6.0,
+        "params_in_the_same_budget": 1.14
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 2,
+        "bytes": 23026176,
+        "bytes_per_param": 4.01,
+        "params_in_the_same_budget": 1.33
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 4,
+        "bytes": 17259008,
+        "bytes_per_param": 3.0,
+        "params_in_the_same_budget": 1.45
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 8,
+        "bytes": 14244352,
+        "bytes_per_param": 2.48,
+        "params_in_the_same_budget": 1.53
+      }
+    ]
+  }
+}

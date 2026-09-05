@@ -8,3 +8,6 @@ tqdm>=4.66.0,<5.0.0
 # Optional, only for the dataset download helpers in scripts/
 datasets>=2.19.0
 requests>=2.31.0
+
+# Optional, only for multimodal training and inference (geocentric train-vision)
+pillow>=10.0.0

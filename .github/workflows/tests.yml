@@ -1,0 +1,44 @@
+name: Training stack tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cuda:
+        description: Run on a registered self-hosted Linux GPU runner
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m pytest -q
+  ubuntu-2604:
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    steps:
+      - run: apt-get update && apt-get install -y python3 python3-venv git ca-certificates
+      - uses: actions/checkout@v4
+      - run: python3 -m venv /tmp/test-env
+      - run: /tmp/test-env/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: /tmp/test-env/bin/pip install -e '.[dev]'
+      - run: /tmp/test-env/bin/python -m pytest -q
+  cuda:
+    if: github.event_name == 'workflow_dispatch' && inputs.cuda
+    runs-on: [self-hosted, linux, x64, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m pip install -e '.[dev]'
+      - run: bash scripts/validate_cuda.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cuda-systems-results
+          path: runs/cuda-validation/systems.json

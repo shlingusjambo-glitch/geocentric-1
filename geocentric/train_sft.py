@@ -26,7 +26,18 @@ from geocentric.trainer import (
     maybe_compile,
     set_lr,
 )
+from geocentric.loss_guard import (
+    OK,
+    ROLLBACK,
+    SKIP,
+    STOP,
+    LossGuard,
+    LossGuardConfig,
+    WeightSnapshot,
+    record_checkpoint,
+)
 from geocentric.training_metrics import initialize_training_metrics, update_training_metrics
+from geocentric.watermark import WatermarkConfig
 from tqdm.auto import tqdm
 
 
@@ -51,7 +62,14 @@ def sft(
     num_workers: Optional[int] = None,
     compile_mode: str = "auto",
     drop_overlong: bool = True,
+    watermark: WatermarkConfig | None = None,
+    drop_watermark: bool = False,
+    loss_guard: bool = True,
+    snapshot_every: int = 100,
+    loss_chunk_size: int = 0,
 ) -> None:
+    if loss_chunk_size < 0 or gradient_accumulation_steps < 1:
+        raise ValueError("loss_chunk_size must be nonnegative and accumulation positive")
     src = Path(model_dir).expanduser().resolve()
     out = Path(output_dir).expanduser().resolve() if output_dir else src
     out.mkdir(parents=True, exist_ok=True)
@@ -72,6 +90,18 @@ def sft(
         src, device=device, dtype=torch.float32,
         checkpoint_name=pretrained_checkpoint_name(modelver, best=True),
     )
+    model.loss_chunk_size = loss_chunk_size
+    if drop_watermark:
+        model.config.watermark = None
+        (out / "watermark.json").unlink(missing_ok=True)
+        print("Watermark: removed.")
+    elif watermark is not None:
+        model.config.watermark = watermark.to_dict()
+        watermark.save(out)
+        print(f"Watermark: on, identity {watermark.identity!r}")
+    elif model.config.watermark:
+        print(f"Watermark: inherited from the pretrained checkpoint "
+              f"({model.config.watermark.get('identity')!r}). Pass --no_watermark to drop it.")
     model.config.gradient_checkpointing = gradient_checkpointing
     for block in model.blocks:
         block.gradient_checkpointing = gradient_checkpointing
@@ -99,7 +129,9 @@ def sft(
     train_loader = DataLoader(train_ds, shuffle=True, drop_last=False, **loader_kwargs)
     eval_loader = DataLoader(eval_ds, shuffle=False, **loader_kwargs) if eval_ds else None
 
-    steps_per_epoch = max(1, len(train_loader) // gradient_accumulation_steps)
+    if not len(train_loader):
+        raise ValueError("No training conversations remain after filtering")
+    steps_per_epoch = math.ceil(len(train_loader) / gradient_accumulation_steps)
     total_steps = steps_per_epoch * max(1, epochs)
     warmup_steps = max(5, int(total_steps * warmup_ratio))
 
@@ -118,6 +150,8 @@ def sft(
     active_model, compiled = maybe_compile(model, device, compile_mode)
     use_scaler = device.type == "cuda" and dtype == torch.float16
     scaler = torch.amp.GradScaler(enabled=use_scaler)
+    model._grad_scaler = scaler
+    loss_normalizer = batch_size * block_size * gradient_accumulation_steps
     autocast = (
         torch.amp.autocast(device_type=device.type, dtype=dtype)
         if device.type in {"cuda", "mps"} and dtype != torch.float32
@@ -132,34 +166,47 @@ def sft(
             "gradient_accumulation_steps": gradient_accumulation_steps,
             "learning_rate": learning_rate, "total_steps": total_steps,
             "block_size": block_size, "dtype": str(dtype), "compiled": compiled,
+            "loss_chunk_size": loss_chunk_size,
+            "watermark_identity": (model.config.watermark or {}).get("identity"),
+            "loss_guard": LossGuardConfig(enabled=loss_guard).to_dict(),
         },
     )
 
     ckpt_name = sft_checkpoint_name(modelver)
     best_name = sft_checkpoint_name(modelver, best=True)
+    # Fine-tuning is short and its loss is noisier per step than pretraining's, so the
+    # guard earns its place here mostly by dropping the occasional poisoned batch
+    # rather than by rolling back.
+    guard = LossGuard(LossGuardConfig(enabled=loss_guard, warmup_steps=30))
+    snapshot = WeightSnapshot(every=snapshot_every, enabled=loss_guard and snapshot_every > 0)
     meter = Throughput(n_params, block_size, device, dtype)
     step = 0
     best_eval = float("inf")
     running_loss = 0.0
     micro_count = 0
+    window_tokens = 0
+    avg_loss = None
     optimizer.zero_grad(set_to_none=True)
 
     try:
         pbar = tqdm(total=total_steps, desc="sft", dynamic_ncols=True)
         for epoch in range(1, max(1, epochs) + 1):
             model.train()
-            for batch in train_loader:
+            for batch_index, batch in enumerate(train_loader):
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
                 labels = batch["labels"].to(device, non_blocking=True)
 
                 with autocast:
-                    _, loss = active_model(input_ids, labels=labels)
+                    _, loss = active_model(input_ids, labels=labels, return_logits=False,
+                                           loss_reduction="sum")
                 if not torch.isfinite(loss):
                     optimizer.zero_grad(set_to_none=True)
                     micro_count = 0
+                    running_loss = 0.0
+                    window_tokens = 0
                     continue
 
-                scaled = loss / gradient_accumulation_steps
+                scaled = loss / loss_normalizer
                 if use_scaler:
                     scaler.scale(scaled).backward()
                 else:
@@ -167,14 +214,51 @@ def sft(
 
                 running_loss += float(loss.detach())
                 micro_count += 1
+                window_tokens += int((labels != -100).sum())
                 meter.add(input_ids.numel())
-                if micro_count < gradient_accumulation_steps:
+                if micro_count < gradient_accumulation_steps and batch_index + 1 < len(train_loader):
+                    continue
+
+                if window_tokens == 0:
+                    optimizer.zero_grad(set_to_none=True)
+                    running_loss = 0.0
+                    micro_count = 0
+                    continue
+                avg_loss = running_loss / window_tokens
+                verdict = guard.observe(step, avg_loss)
+                if verdict.action in (SKIP, ROLLBACK, STOP):
+                    optimizer.zero_grad(set_to_none=True)
+                    running_loss = 0.0
+                    micro_count = 0
+                    window_tokens = 0
+                    if verdict.action == SKIP:
+                        print(f"\n  [loss guard] step {step}: {verdict.reason}")
+                        continue
+                    if verdict.action == STOP:
+                        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer,
+                                        extra={"stage": "sft", "loss": avg_loss})
+                        update_training_metrics(out, {"status": "diverged", "message": verdict.reason})
+                        return
+                    restored = snapshot.restore(model)
+                    print(f"\n  [loss guard] {verdict.action.upper()} at step {step}: "
+                          f"{verdict.reason}")
+                    if restored is not None:
+                        print(f"    restored the weights from step {restored:,}.")
+                        step = restored
+                        optimizer.state.clear()
                     continue
 
                 lr = lr_at_step(step, total_steps, learning_rate, warmup_steps, min_lr_ratio)
+                lr *= verdict.lr_scale
                 set_lr(optimizer, lr)
                 if use_scaler:
                     scaler.unscale_(optimizer)
+                # Losses were summed, then divided by a nominal token budget
+                # before backward to keep FP16 gradients in range. Normalize by actual supervised tokens, including
+                # the final partial window and variable-length assistant responses.
+                for parameter in model.parameters():
+                    if parameter.grad is not None:
+                        parameter.grad.mul_(loss_normalizer / window_tokens)
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 if torch.isfinite(grad_norm):
                     if use_scaler:
@@ -187,10 +271,11 @@ def sft(
 
                 optimizer.zero_grad(set_to_none=True)
                 step += 1
-                avg_loss = running_loss / max(1, micro_count)
                 running_loss = 0.0
                 micro_count = 0
+                window_tokens = 0
                 pbar.update(1)
+                snapshot.maybe_take(model, step, healthy=verdict.action == OK)
 
                 if step % log_every == 0:
                     tps, mfu = meter.read()
@@ -198,7 +283,8 @@ def sft(
                     update_training_metrics(out, {
                         "step": step, "epoch": epoch, "loss": avg_loss, "lr": lr,
                         "perplexity": math.exp(min(avg_loss, 20)),
-                        "tokens_per_second": tps, "message": "Training.",
+                        "tokens_per_second": tps, "loss_guard": guard.summary(),
+                        "message": "Training.",
                     })
                     meter.reset()
 
@@ -208,10 +294,14 @@ def sft(
                 update_training_metrics(out, {"eval_loss": eval_loss, "message": f"Epoch {epoch} evaluated."})
                 if eval_loss < best_eval:
                     best_eval = eval_loss
-                    save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"stage": "sft"})
+                    save_checkpoint(model, out, step, name=best_name, optimizer=optimizer,
+                                    extra={"stage": "sft", "loss": avg_loss, "eval_loss": eval_loss})
+                    record_checkpoint(out, best_name, step, avg_loss, eval_loss)
                     print("  new best SFT checkpoint saved.")
                 meter.reset()
-            save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"stage": "sft"})
+            save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer,
+                            extra={"stage": "sft", "loss": avg_loss})
+            record_checkpoint(out, ckpt_name, step, avg_loss)
         pbar.close()
     except KeyboardInterrupt:
         print("\n[Ctrl+C] Saving SFT checkpoint before exit...")
@@ -223,7 +313,8 @@ def sft(
 
     if not (out / best_name).exists():
         save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"stage": "sft"})
-    update_training_metrics(out, {"status": "complete", "message": "SFT complete."})
+    update_training_metrics(out, {"status": "complete", "step": step, "message": "SFT complete.",
+                                  "loss_guard": guard.summary()})
     print(f"SFT complete after {step:,} steps. Saved to {out}")
 
 
@@ -236,9 +327,9 @@ def evaluate(model, loader: DataLoader, device: torch.device, autocast) -> float
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
         with autocast:
-            _, loss = model(input_ids, labels=labels)
+            _, loss = model(input_ids, labels=labels, return_logits=False, loss_reduction="sum")
         if loss is not None and torch.isfinite(loss):
             total += float(loss.detach())
-            count += 1
+            count += int((labels != -100).sum())
     model.train()
     return total / max(1, count)

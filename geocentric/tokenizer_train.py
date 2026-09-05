@@ -21,6 +21,9 @@ SPECIAL_TOKENS = [
     "<|user|>",
     "<|assistant|>",
     "<|eot|>",
+    # Reserved now so a text-only tokenizer can be used for vision training later
+    # without growing the embedding matrix. One vocabulary slot is a cheap option.
+    "<|image|>",
 ]
 
 # 8192 was far too small. At that size the tokenizer emits sub-word rubble, so the

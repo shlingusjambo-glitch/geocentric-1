@@ -1,0 +1,180 @@
+{
+  "args": {
+    "data": "runs/research-corpus/alice.jsonl",
+    "output": "runs/epicycle-realtext-v2",
+    "arms": [
+      "baseline",
+      "speed",
+      "capacity"
+    ],
+    "steps": 80,
+    "preset": null,
+    "vocab_size": 4000,
+    "block_size": 512,
+    "n_layer": 6,
+    "n_head": 4,
+    "n_kv_head": 2,
+    "n_embd": 256,
+    "batch_size": 2,
+    "accum": 1,
+    "learning_rate": 0.0006,
+    "eval_every": 20,
+    "val_fraction": 0.15,
+    "seed": 2026,
+    "overwrite": false,
+    "dtype": "auto",
+    "compile_mode": "off",
+    "num_workers": 0,
+    "render_only": false
+  },
+  "results": [
+    {
+      "arm": "baseline",
+      "preset": "off",
+      "wall_seconds": 7.9,
+      "steps": 80,
+      "final_loss": 4.9908833503723145,
+      "eval_loss": 5.110452175140381,
+      "tokens_seen": 80896,
+      "tokens_per_second": 15785.28855565979,
+      "peak_memory_gb": 0.0,
+      "events": [],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          6.059649387995402,
+          5.366201082865397,
+          5.184027194976807,
+          5.110452175140381
+        ],
+        "elapsed": [
+          1.96,
+          4.24,
+          5.77,
+          7.27
+        ]
+      },
+      "dir": "runs/epicycle-realtext-v2/baseline"
+    },
+    {
+      "arm": "speed",
+      "preset": "speed",
+      "wall_seconds": 5.7,
+      "steps": 80,
+      "final_loss": 4.883693695068359,
+      "eval_loss": 5.067365805308024,
+      "tokens_seen": 80896,
+      "tokens_per_second": 15590.979363851391,
+      "peak_memory_gb": 0.0,
+      "events": [
+        "step 1: depth 4/6",
+        "step 17: depth 5/6",
+        "step 33: depth 6/6",
+        "step 40: context 512"
+      ],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          5.985299984614055,
+          5.351042668024699,
+          5.1242092450459795,
+          5.067365805308024
+        ],
+        "elapsed": [
+          1.03,
+          2.34,
+          3.87,
+          5.37
+        ]
+      },
+      "dir": "runs/epicycle-realtext-v2/speed"
+    },
+    {
+      "arm": "capacity",
+      "preset": "capacity",
+      "wall_seconds": 6.2,
+      "steps": 80,
+      "final_loss": 4.814661979675293,
+      "eval_loss": 5.036027987798055,
+      "tokens_seen": 80896,
+      "tokens_per_second": 14258.245272685856,
+      "peak_memory_gb": 0.0,
+      "events": [
+        "step 1: depth 4/6",
+        "step 17: depth 5/6",
+        "step 33: depth 6/6",
+        "step 40: context 512"
+      ],
+      "history": {
+        "steps": [
+          20,
+          40,
+          60,
+          80
+        ],
+        "loss": [
+          6.095848162968953,
+          5.2932562828063965,
+          5.076606035232544,
+          5.036027987798055
+        ],
+        "elapsed": [
+          1.49,
+          2.8,
+          4.4,
+          5.97
+        ]
+      },
+      "dir": "runs/epicycle-realtext-v2/capacity"
+    }
+  ],
+  "memory": {
+    "n_params": 5745920,
+    "rows": [
+      {
+        "optimizer": "AdamW (fp32)",
+        "rings": "-",
+        "bytes": 45967360,
+        "bytes_per_param": 8.0
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 1,
+        "bytes": 34475520,
+        "bytes_per_param": 6.0,
+        "params_in_the_same_budget": 1.14
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 2,
+        "bytes": 23026176,
+        "bytes_per_param": 4.01,
+        "params_in_the_same_budget": 1.33
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 4,
+        "bytes": 17259008,
+        "bytes_per_param": 3.0,
+        "params_in_the_same_budget": 1.45
+      },
+      {
+        "optimizer": "RingAdamW",
+        "rings": 8,
+        "bytes": 14244352,
+        "bytes_per_param": 2.48,
+        "params_in_the_same_budget": 1.53
+      }
+    ]
+  }
+}

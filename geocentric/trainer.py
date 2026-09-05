@@ -149,6 +149,7 @@ def find_batch_size(
     max_batch: int = 64,
     safety: float = 0.85,
     probe_steps: int = 3,
+    optimizer_factory=None,
 ) -> int:
     """Find the largest micro-batch that survives several real training steps.
 
@@ -172,30 +173,37 @@ def find_batch_size(
         return 4
 
     free_bytes, _total = torch.cuda.mem_get_info(device)
-    budget = free_bytes * safety
+    budget = torch.cuda.memory_allocated(device) + free_bytes * safety
     was_training = model.training
     model.train()
     vocab = int(getattr(model.config, "vocab_size", 32000))
 
     snapshot = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
-    probe_optimizer = build_optimizer(
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = torch.cuda.get_rng_state(device)
+    probe_optimizer = optimizer_factory() if optimizer_factory else build_optimizer(
         model, learning_rate, weight_decay, device_type="cuda", quiet=True
     )
+    if hasattr(probe_optimizer, "ring_load"):
+        # Test the largest momentum ring, not whichever ring happens to be first.
+        largest = max(range(probe_optimizer.rings), key=probe_optimizer.ring_load.__getitem__)
+        probe_optimizer._global_step = largest * probe_optimizer.dwell
     scaler = torch.amp.GradScaler(enabled=(dtype == torch.float16))
 
     def fits(batch: int) -> bool:
         torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_peak_memory_stats(device)
         try:
             for _ in range(probe_steps):
                 ids = torch.randint(0, vocab, (batch, block_size), device=device)
                 with torch.amp.autocast(device_type="cuda", dtype=dtype, enabled=dtype != torch.float32):
-                    _, loss = model(ids, labels=ids)
+                    _, loss = model(ids, labels=ids, return_logits=False)
                 scaler.scale(loss).backward()
                 scaler.step(probe_optimizer)
                 scaler.update()
                 probe_optimizer.zero_grad(set_to_none=True)
-            return torch.cuda.max_memory_allocated() < budget
+            torch.cuda.synchronize(device)
+            return torch.cuda.max_memory_allocated(device) < budget
         except torch.OutOfMemoryError:
             return False
         finally:
@@ -217,26 +225,29 @@ def find_batch_size(
                 "choose a smaller --preset, or add --gradient_checkpointing."
             )
 
-        low, high = best, min(best * 2, max_batch)
-        while low + 1 < high:
+        low, high = best + 1, min(best * 2 - 1, max_batch)
+        while low <= high:
             mid = (low + high) // 2
             if fits(mid):
-                low = mid
+                best = mid
+                low = mid + 1
             else:
-                high = mid
+                high = mid - 1
     finally:
         # Undo everything the probe did before the real run starts.
         probe_optimizer.zero_grad(set_to_none=True)
         del probe_optimizer
-        model.load_state_dict({k: v.to(device) for k, v in snapshot.items()})
+        model.load_state_dict(snapshot)
+        torch.set_rng_state(cpu_rng)
+        torch.cuda.set_rng_state(cuda_rng, device)
         del snapshot
         if not was_training:
             model.eval()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-    print(f"Auto batch size: {low} x {block_size} tokens (measured against {free_bytes / 1024**3:.1f} GB free)")
-    return low
+    print(f"Auto batch size: {best} x {block_size} tokens (measured against {free_bytes / 1024**3:.1f} GB free)")
+    return best
 
 
 def estimate_batch_size(
