@@ -268,6 +268,13 @@ def _run_chat(args: argparse.Namespace) -> None:
     from geocentric.checkpoint import load_model_and_tokenizer
     from geocentric.generate import build_chat_prompt, stream_text
 
+    try:
+        # Gives input() arrow-key history and line editing. Without it an up-arrow
+        # arrives as the literal escape sequence and gets fed to the model as text.
+        import readline  # noqa: F401
+    except ImportError:
+        pass
+
     model, tokenizer, stage = load_model_and_tokenizer(args.model_dir, with_stage=True)
     mode = args.mode if args.mode != "auto" else ("chat" if stage == "sft" else "base")
 
@@ -304,9 +311,18 @@ def _run_chat(args: argparse.Namespace) -> None:
             continue
         if line in {"/exit", "/quit"}:
             break
-        if line == "/reset":
+        if line in {"/reset", "/clear", "/new"}:
             history = []
             print("History cleared.\n")
+            continue
+        if line == "/help":
+            print("  /reset  clear history    /system <text>  set system prompt    /exit  quit\n")
+            continue
+        if line.startswith("/") and not line.startswith("/system"):
+            # Silently generating from a mistyped command looks like the model
+            # ignoring you; say so instead.
+            print(f"Unknown command {line.split()[0]!r}. Try /help, or prefix with a space "
+                  "to send it as text.\n")
             continue
         if line.startswith("/system "):
             system = line[len("/system "):].strip()
