@@ -1,61 +1,103 @@
-import math
-from typing import Dict, Any
+"""Turn a parameter budget like '250m' into a balanced, hardware-sane architecture."""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Tuple
 
 
 def parse_param_string(size_str: str) -> int:
-    """Converts strings like '350m', '1.2b', '110M' into exact raw integers."""
-    cleaned = size_str.strip().lower().replace("'", "").replace('"', "")
+    cleaned = str(size_str).strip().lower().replace("'", "").replace('"', "").replace("_", "")
     if cleaned.endswith("m"):
         return int(float(cleaned[:-1]) * 1_000_000)
-    elif cleaned.endswith("b"):
+    if cleaned.endswith("b"):
         return int(float(cleaned[:-1]) * 1_000_000_000)
-    else:
-        # Allow plain numeric strings
-        return int(float(cleaned))
+    return int(float(cleaned))
 
 
-def compute_fluid_dimensions(target_size_str: str, vocab_size: int = 32000) -> Dict[str, Any]:
+def _ffn_hidden(n_embd: int) -> int:
+    hidden = int(8 * n_embd / 3)
+    return 128 * ((hidden + 127) // 128)
+
+
+def exact_params(vocab_size: int, n_layer: int, n_embd: int, n_head: int, n_kv_head: int) -> int:
+    """Parameter count for the real architecture, including weight tying."""
+    head_dim = n_embd // n_head
+    # Tied embeddings are one matrix, not two — the old compiler deducted it twice.
+    embedding = vocab_size * n_embd
+    attn = n_embd * n_embd * 2 + 2 * n_embd * (n_kv_head * head_dim)
+    ffn = 3 * n_embd * _ffn_hidden(n_embd)
+    norms = 2 * n_embd
+    return embedding + n_layer * (attn + ffn + norms) + n_embd
+
+
+def _kv_heads(n_head: int) -> int:
+    # Grouped-query attention: roughly a quarter of the query heads, at least one,
+    # and always an exact divisor. Shrinks the KV cache ~4x for negligible quality cost.
+    for candidate in range(max(1, n_head // 4), 0, -1):
+        if n_head % candidate == 0:
+            return candidate
+    return 1
+
+
+def compute_fluid_dimensions(
+    target_size_str: str,
+    vocab_size: int = 32000,
+    block_size: int | None = None,
+) -> Dict[str, Any]:
+    """Search width/depth pairs for the closest match to the parameter budget.
+
+    Depth and width are chosen together against a target aspect ratio rather than
+    read off a four-bucket ladder, and the result is verified against the exact
+    parameter formula instead of a rough estimate.
     """
-    Reverse-engineers a mathematically balanced GPT config from a fluid parameter target.
-    Balances the quadratic growth of the FFN layers alongside the embedding overhead.
-    """
-    target_params = parse_param_string(target_size_str)
+    target = parse_param_string(target_size_str)
+    if target < 4_000_000:
+        raise ValueError(f"Target size {target_size_str} is too small to be worth training.")
 
-    # 1. Deduct non-hidden structural components (Embedding & Language Model Head)
-    # Assume embedding matrices for token + head weight tying
-    embedding_params = vocab_size * 1024
-    available_params = target_params - (embedding_params * 2)
+    candidates: List[Tuple[float, Dict[str, Any]]] = []
+    for n_embd in range(256, 4097, 128):
+        if n_embd % 64 != 0:
+            continue
+        n_head = max(4, n_embd // 64)
+        if n_embd % n_head != 0:
+            continue
+        n_kv_head = _kv_heads(n_head)
 
-    if available_params <= 0:
-        raise ValueError(f"Target size {target_size_str} is too small to contain a {vocab_size} vocab matrix.")
+        base = exact_params(vocab_size, 0, n_embd, n_head, n_kv_head)
+        per_layer = exact_params(vocab_size, 1, n_embd, n_head, n_kv_head) - base
+        n_layer = round((target - base) / per_layer)
+        if n_layer < 4 or n_layer > 96:
+            continue
 
-    # 2. Heuristically derive ideal hidden size (n_embd) using typical scaling laws
-    if target_params < 250_000_000:
-        n_embd = 768
-    elif target_params < 600_000_000:
-        n_embd = 1024
-    elif target_params < 2_000_000_000:
-        n_embd = 2048
-    else:
-        n_embd = 4096
+        actual = exact_params(vocab_size, n_layer, n_embd, n_head, n_kv_head)
+        size_error = abs(actual - target) / target
+        if size_error > 0.15:
+            continue
 
-    # 3. Calculate parameter cost per individual layer block
-    # Self-Attention (4 * n_embd^2) + FFN (8 * n_embd^2) = 12 * n_embd^2
-    params_per_layer = 12 * (n_embd ** 2)
+        # Well-shaped transformers sit near d_model/n_layer ~ 64-128. Penalize
+        # both the very deep-and-thin and very wide-and-shallow ends.
+        aspect = n_embd / n_layer
+        aspect_error = abs(aspect - 96) / 96
+        candidates.append((size_error + 0.5 * aspect_error, {
+            "n_layer": n_layer,
+            "n_head": n_head,
+            "n_kv_head": n_kv_head,
+            "n_embd": n_embd,
+            "params": actual,
+        }))
 
-    # 4. Deriving the required layers
-    n_layer = max(2, round(available_params / params_per_layer))
+    if not candidates:
+        raise ValueError(
+            f"Could not find a balanced architecture near {target_size_str} for vocab {vocab_size}."
+        )
 
-    # 5. Calculate matching attention heads (Must divide evenly)
-    n_head = n_embd // 64 if (n_embd // 64) > 0 else 12
+    best = min(candidates, key=lambda item: item[0])[1]
+    # 1024 minimum. The old default of 256 meant the model could never see enough
+    # context to stay on a topic, no matter how long it trained.
+    best["block_size"] = int(block_size) if block_size else (2048 if target >= 700_000_000 else 1024)
+    best["intermediate_size"] = _ffn_hidden(best["n_embd"])
+    return best
 
-    # Context block constraints to preserve local system RAM / RAM overhead
-    block_size = 256 if target_params < 1_000_000_000 else 512
 
-    return {
-        "n_layer": int(n_layer),
-        "n_head": int(n_head),
-        "n_embd": int(n_embd),
-        "block_size": int(block_size),
-        "intermediate_size": int(4 * n_embd),
-    }
+def recommended_tokens(n_params: int, ratio: int = 20) -> int:
+    """Chinchilla-style compute-optimal token budget: about 20 tokens per parameter."""
+    return int(n_params * ratio)

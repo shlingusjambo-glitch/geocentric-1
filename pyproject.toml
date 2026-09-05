@@ -5,31 +5,19 @@ build-backend = "hatchling.build"
 [project]
 name = "geocentric"
 dynamic = ["version"]
-description = "Geocentric Code — local-first AI coding agent CLI and LLM lab"
+description = "Geocentric — train a causal language model from scratch"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "torch>=2.4.0",
     "tokenizers>=0.20.0,<1.0.0",
-    "fastapi>=0.115.0,<1.0.0",
-    "uvicorn[standard]>=0.30.0,<1.0.0",
-    "pydantic>=2.8.0,<3.0.0",
     "numpy>=1.26.0,<3.0.0",
     "tqdm>=4.66.0,<5.0.0",
-    "psutil>=6.0.0,<8.0.0",
-    "huggingface_hub>=0.17.0,<1.0.0",
-    "safetensors>=0.4.0,<1.0.0",
-    "transformers>=4.40.0,<5.0.0",
-    "cryptography>=42.0.0,<46.0.0",
-    "diffusers>=0.30.0",
-    "accelerate>=0.30.0",
-    "prompt_toolkit>=3.0.0,<4.0.0",
-    "httpx>=0.27.0,<1.0.0",
-    "keyring>=24.0.0,<26.0.0",
-    "anthropic>=0.40.0,<1.0.0",
-    "openai>=1.50.0,<2.0.0",
-    "google-genai>=0.3.0,<1.0.0",
 ]
+
+[project.optional-dependencies]
+data = ["datasets>=2.19.0", "requests>=2.31.0"]
+dev = ["pytest>=8.0.0"]
 
 [project.scripts]
 geocentric = "geocentric.cli:main"
@@ -42,7 +30,3 @@ packages = ["geocentric"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]

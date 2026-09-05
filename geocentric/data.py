@@ -3,280 +3,337 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Mapping, Sequence
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from tokenizers import Tokenizer
 
+from geocentric.chat import messages_from_record, render_chat
 from geocentric.tokenizer_train import token_id
 
+TEXT_SUFFIXES = {".txt", ".md"}
+RECORD_SUFFIXES = {".jsonl", ".json", ".csv"}
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | RECORD_SUFFIXES
 
-def _data_path_candidates(path: str | Path) -> list[Path]:
-    """Common fallback locations for user-friendly CLI paths."""
-    raw = Path(path).expanduser()
-    cwd = Path.cwd().expanduser().resolve()
-    candidates: list[Path] = []
-
-    def add(p: Path) -> None:
-        try:
-            resolved = p.expanduser().resolve()
-        except Exception:
-            return
-        if resolved not in candidates:
-            candidates.append(resolved)
-
-    add(raw)
-    if not raw.is_absolute():
-        add(cwd / raw)
-
-    text = str(raw).lower()
-    if "wiki" in text or "wikipedia" in text:
-        for rel in [
-            "data/wikipedia_pretrain",
-            "data/wikitext103",
-            "data/wikitext-103",
-            "data/wiki",
-            "data/wikipedia",
-            "data/wikitext103/wiki.train.tokens",
-            "data/wikitext-103/wiki.train.tokens",
-            "data/wiki.train.tokens",
-        ]:
-            add(cwd / rel)
-    return candidates
+_STREAM_CHUNK = 1 << 20  # 1 MiB
 
 
 def _resolve_data_path(path: str | Path) -> Path:
-    candidates = _data_path_candidates(path)
-    requested = Path(path).expanduser()
-    try:
-        requested_resolved = requested.resolve()
-    except Exception:
-        requested_resolved = requested
-
-    for candidate in candidates:
-        if candidate.exists():
-            if candidate != requested_resolved:
-                print(f"Data path not found exactly; using fallback data path: {candidate}")
-            return candidate
-
-    data_dir = Path.cwd() / "data"
-    existing_hint = ""
-    if data_dir.exists():
-        try:
-            children = sorted(str(p.relative_to(Path.cwd())) for p in data_dir.iterdir())[:30]
-            if children:
-                existing_hint = "\nExisting entries under ./data:\n  - " + "\n  - ".join(children)
-        except Exception:
-            pass
-    searched = "\n  - ".join(str(p) for p in candidates)
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = (Path.cwd() / p).resolve()
+    if p.exists():
+        return p
     raise FileNotFoundError(
-        f"Training data path does not exist: {requested}\n"
-        f"Searched:\n  - {searched}"
-        f"{existing_hint}\n\n"
-        "Fix options:\n"
-        "  1) Point --data_path at an existing .txt/.md/.json/.jsonl/.csv file or folder.\n"
-        "  2) Download the bundled wiki dataset first:\n"
-        "     venv/bin/python -m geocentric.cli download-wiki\n"
-        "  3) Then rerun pretrain with the actual folder shown under ./data."
+        f"Training data path does not exist: {path}\n"
+        "Point --data_path at a .txt/.md/.json/.jsonl/.csv file or a folder of them, "
+        "or run `geocentric download-wiki` first."
     )
 
 
-def iter_texts(path: str | Path) -> Iterator[str]:
-    """Yield training text from txt, jsonl, json, csv, or a directory."""
-    p = _resolve_data_path(path)
-
+def _iter_files(p: Path) -> Iterator[Path]:
     if p.is_dir():
-        found_supported = False
+        found = False
         for child in sorted(p.rglob("*")):
-            if child.is_file() and child.suffix.lower() in {".txt", ".md", ".jsonl", ".json", ".csv"}:
-                found_supported = True
-                yield from iter_texts(child)
-        if not found_supported:
+            if child.is_file() and child.suffix.lower() in SUPPORTED_SUFFIXES:
+                found = True
+                yield child
+        if not found:
             raise ValueError(
-                f"No supported training files found in {p}. Supported: .txt, .md, .jsonl, .json, .csv"
+                f"No supported training files under {p}. Supported: {', '.join(sorted(SUPPORTED_SUFFIXES))}"
             )
-        return
+    else:
+        yield p
 
-    suffix = p.suffix.lower()
-    if suffix in {".txt", ".md"}:
-        with p.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if line.strip():
-                    yield line
-        return
 
-    if suffix == ".jsonl":
-        with p.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                yield format_record_for_text(row)
-        return
+def _split_stream(handle, sep: str) -> Iterator[str]:
+    """Stream a text file, splitting on `sep` without loading it all into memory."""
+    buffer = ""
+    while True:
+        chunk = handle.read(_STREAM_CHUNK)
+        if not chunk:
+            break
+        buffer += chunk
+        pieces = buffer.split(sep)
+        buffer = pieces.pop()
+        for piece in pieces:
+            if piece.strip():
+                yield piece
+    if buffer.strip():
+        yield buffer
 
-    if suffix == ".json":
-        payload = json.loads(p.read_text(encoding="utf-8"))
-        rows = payload if isinstance(payload, list) else [payload]
-        for row in rows:
-            yield format_record_for_text(row)
-        return
 
-    if suffix == ".csv":
-        with p.open("r", encoding="utf-8", newline="") as handle:
-            csv.field_size_limit(100_000_000)
-            reader = csv.reader(handle)
-            try:
-                first_row = next(reader)
-            except StopIteration:
-                return
-            
-            header_keys = {"instruction", "input", "output", "response", "text", "messages"}
-            has_header = any(col.lower() in header_keys for col in first_row if isinstance(col, str))
-            
-            if has_header:
-                headers = first_row
-                for row in reader:
-                    if len(row) <= len(headers):
-                        row_dict = {headers[i]: row[i] for i in range(len(row))}
-                        yield format_record_for_text(row_dict)
-            else:
-                if len(first_row) == 1:
-                    yield first_row[0]
+def iter_documents(path: str | Path, doc_sep: Optional[str] = None) -> Iterator[str]:
+    """Yield whole documents — never individual lines.
+
+    The previous implementation yielded raw text one line at a time and the dataset
+    appended an end-of-sequence token after each, which trained the model to reset
+    its context every ~15 tokens. That is why generations stayed locally fluent but
+    never held a topic. Plain text files are now treated as a single continuous
+    document unless `doc_sep` marks real boundaries; structured records are one
+    document each, which they genuinely are.
+    """
+    root = _resolve_data_path(path)
+    for file in _iter_files(root):
+        suffix = file.suffix.lower()
+
+        if suffix in TEXT_SUFFIXES:
+            with file.open("r", encoding="utf-8", errors="replace") as handle:
+                if doc_sep:
+                    yield from _split_stream(handle, doc_sep)
                 else:
-                    yield "\n".join(first_row)
-                
-                for row in reader:
-                    if len(row) == 1:
-                        yield row[0]
-                    elif len(row) > 1:
-                        yield "\n".join(row)
-        return
+                    while True:
+                        chunk = handle.read(_STREAM_CHUNK * 8)
+                        if not chunk:
+                            break
+                        yield chunk
+            continue
 
-    raise ValueError(f"Unsupported data format: {p}")
+        if suffix == ".jsonl":
+            with file.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        text = record_to_text(json.loads(line))
+                        if text:
+                            yield text
+            continue
 
-def format_record_for_text(row: Mapping[str, object]) -> str:
-    """Map common SFT records into a single training string."""
-    if "messages" in row and isinstance(row["messages"], list):
-        parts: List[str] = []
-        for msg in row["messages"]:  # type: ignore[index]
-            if not isinstance(msg, Mapping):
-                continue
-            role = str(msg.get("role", "user")).strip()
-            content = str(msg.get("content", "")).strip()
-            if content:
-                parts.append(f"<|{role}|>\n{content}")
-        return "\n".join(parts).strip() + "\n<eos>"
+        if suffix == ".json":
+            payload = json.loads(file.read_text(encoding="utf-8"))
+            rows = payload if isinstance(payload, list) else [payload]
+            for row in rows:
+                text = record_to_text(row)
+                if text:
+                    yield text
+            continue
 
-    instruction = str(row.get("instruction", "")).strip()
-    input_text = str(row.get("input", "")).strip()
-    response = str(row.get("response", row.get("output", ""))).strip()
+        if suffix == ".csv":
+            with file.open("r", encoding="utf-8", newline="") as handle:
+                csv.field_size_limit(100_000_000)
+                reader = csv.reader(handle)
+                try:
+                    first = next(reader)
+                except StopIteration:
+                    continue
+                header_keys = {"instruction", "input", "output", "response", "text", "messages"}
+                if any(isinstance(c, str) and c.lower() in header_keys for c in first):
+                    for row in reader:
+                        if len(row) <= len(first):
+                            text = record_to_text({first[i]: row[i] for i in range(len(row))})
+                            if text:
+                                yield text
+                else:
+                    for row in [first, *reader]:
+                        joined = "\n".join(row).strip()
+                        if joined:
+                            yield joined
+            continue
+
+        raise ValueError(f"Unsupported data format: {file}")
+
+
+def record_to_text(row: Mapping[str, object]) -> str:
+    """Flatten a structured record into pretraining text."""
+    messages = messages_from_record(row)
+    if messages:
+        text, _ = render_chat(messages)
+        return text
     text = str(row.get("text", "")).strip()
-
-    if instruction or response:
-        prompt = f"### Instruction:\n{instruction}\n"
-        if input_text:
-            prompt += f"\n### Input:\n{input_text}\n"
-        prompt += f"\n### Response:\n{response}\n<eos>"
-        return prompt
-
     if text:
         return text
-
-    return "\n".join(f"{k}: {v}" for k, v in row.items())
-
-
-def format_prompt(instruction: str, input_text: str = "") -> str:
-    prompt = f"### Instruction:\n{instruction.strip()}\n"
-    if input_text.strip():
-        prompt += f"\n### Input:\n{input_text.strip()}\n"
-    prompt += "\n### Response:\n"
-    return prompt
+    return "\n".join(f"{k}: {v}" for k, v in row.items()).strip()
 
 
-class CausalTextDataset(Dataset):
-    """Fixed-length causal LM chunks for pretraining, chunked into non-overlapping blocks for speed."""
+# ---------------------------------------------------------------------------
+# Binary token corpus
+# ---------------------------------------------------------------------------
 
-    def __init__(self, tokenizer: Tokenizer, texts: Iterable[str], block_size: int) -> None:
-        eos = token_id(tokenizer, "<eos>")
-        ids: List[int] = []
-        
-        batch_size = 8192
-        current_batch: List[str] = []
-        
-        print("Tokenizing pretraining dataset in high-speed multi-threaded batches...")
-        for text in texts:
-            if text.strip():
-                current_batch.append(text)
-                
-            if len(current_batch) >= batch_size:
-                encodings = tokenizer.encode_batch(current_batch)
-                for enc in encodings:
-                    ids.extend(enc.ids + [eos])
-                current_batch = []
-                
-        if current_batch:
-            encodings = tokenizer.encode_batch(current_batch)
-            for enc in encodings:
-                ids.extend(enc.ids + [eos])
-                
-        print(f"Tokenization complete! Total processed tokens: {len(ids):,}")
+def _token_dtype(vocab_size: int) -> np.dtype:
+    return np.dtype(np.uint16) if vocab_size < 2**16 else np.dtype(np.uint32)
 
-        self.block_size = block_size
-        self.chunks: List[Dict[str, torch.Tensor]] = []
-        
-        # Chunk into non-overlapping blocks of length block_size
-        for i in range(0, len(ids) - block_size, block_size):
-            chunk = ids[i : i + block_size + 1]
-            if len(chunk) == block_size + 1:
-                self.chunks.append({
-                    "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
-                    "labels": torch.tensor(chunk[1:], dtype=torch.long)
-                })
 
-        if not self.chunks:
-            raise ValueError(
-                f"Not enough tokens for block_size={block_size}. Got only {len(ids)} tokens."
+def corpus_paths(out_dir: str | Path, split: str) -> Tuple[Path, Path]:
+    out = Path(out_dir)
+    return out / f"{split}.bin", out / f"{split}.meta.json"
+
+
+def prepare_corpus(
+    tokenizer: Tokenizer,
+    data_path: str | Path,
+    out_dir: str | Path,
+    val_fraction: float = 0.005,
+    doc_sep: Optional[str] = None,
+    batch_size: int = 1024,
+    progress: bool = True,
+) -> Dict[str, int]:
+    """Tokenize a corpus once into flat uint16/uint32 memmap files.
+
+    Holding a whole corpus as a Python list of ints costs roughly 100 bytes per
+    token, which capped training at a few tens of millions of tokens. A memmap of
+    2-byte ids costs 2 bytes per token and never enters resident memory, so the
+    corpus size is now bounded by disk rather than RAM.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    vocab_size = tokenizer.get_vocab_size()
+    dtype = _token_dtype(vocab_size)
+    eos = token_id(tokenizer, "<eos>")
+
+    train_bin, train_meta = corpus_paths(out, "train")
+    val_bin, val_meta = corpus_paths(out, "val")
+
+    # The validation split is a contiguous tail of the stream rather than random
+    # windows. Random windows drawn from the same documents leak into training and
+    # make eval loss look better than the model actually is.
+    counts = {"train": 0, "val": 0, "documents": 0}
+    buffer: List[str] = []
+
+    total_written = 0
+    tmp_bin = out / "corpus.tmp.bin"
+    with tmp_bin.open("wb") as sink:
+        def flush(batch: List[str]) -> None:
+            nonlocal total_written
+            if not batch:
+                return
+            for enc in tokenizer.encode_batch(batch):
+                ids = enc.ids + [eos]
+                sink.write(np.asarray(ids, dtype=dtype).tobytes())
+                total_written += len(ids)
+
+        for doc in iter_documents(data_path, doc_sep=doc_sep):
+            counts["documents"] += 1
+            buffer.append(doc)
+            if len(buffer) >= batch_size:
+                flush(buffer)
+                buffer = []
+                if progress and counts["documents"] % (batch_size * 10) == 0:
+                    print(f"  tokenized {counts['documents']:,} documents / {total_written:,} tokens")
+        flush(buffer)
+
+    if total_written == 0:
+        tmp_bin.unlink(missing_ok=True)
+        raise ValueError(f"No tokens produced from {data_path}")
+
+    n_val = int(total_written * val_fraction)
+    n_val = max(0, min(n_val, total_written // 2))
+    n_train = total_written - n_val
+
+    all_tokens = np.memmap(tmp_bin, dtype=dtype, mode="r", shape=(total_written,))
+    np.asarray(all_tokens[:n_train]).tofile(train_bin)
+    if n_val > 0:
+        np.asarray(all_tokens[n_train:]).tofile(val_bin)
+    del all_tokens
+    tmp_bin.unlink(missing_ok=True)
+
+    counts["train"] = n_train
+    counts["val"] = n_val
+    for path, count in ((train_meta, n_train), (val_meta, n_val)):
+        if count > 0 or path is train_meta:
+            path.write_text(
+                json.dumps({"tokens": count, "dtype": dtype.name, "vocab_size": vocab_size}, indent=2),
+                encoding="utf-8",
             )
+    if progress:
+        print(
+            f"Corpus ready: {counts['documents']:,} documents -> "
+            f"{n_train:,} train tokens, {n_val:,} val tokens ({dtype.name})"
+        )
+    return counts
+
+
+class PackedDataset(Dataset):
+    """Fixed-length windows over a memmapped token stream.
+
+    Windows are cut from the concatenated corpus, so a training example can span a
+    document boundary — which is what teaches long-range coherence. Nothing is
+    copied until a batch is actually requested.
+    """
+
+    def __init__(self, bin_path: str | Path, block_size: int, dtype: str = "uint16") -> None:
+        self.path = Path(bin_path)
+        if not self.path.exists():
+            raise FileNotFoundError(f"Token corpus not found: {self.path}")
+        self.block_size = block_size
+        self.dtype = np.dtype(dtype)
+        self.n_tokens = self.path.stat().st_size // self.dtype.itemsize
+        self.n_windows = max(0, (self.n_tokens - 1) // block_size)
+        if self.n_windows == 0:
+            raise ValueError(
+                f"Corpus {self.path} holds {self.n_tokens:,} tokens, too few for block_size={block_size}."
+            )
+        self._data: Optional[np.memmap] = None
+
+    def _memmap(self) -> np.memmap:
+        # Opened lazily so each DataLoader worker gets its own handle.
+        if self._data is None:
+            self._data = np.memmap(self.path, dtype=self.dtype, mode="r")
+        return self._data
 
     def __len__(self) -> int:
-        return len(self.chunks)
+        return self.n_windows
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        return self.chunks[idx]
+        start = idx * self.block_size
+        window = np.asarray(self._memmap()[start : start + self.block_size + 1], dtype=np.int64)
+        return {
+            "input_ids": torch.from_numpy(window[:-1]),
+            "labels": torch.from_numpy(window[1:]),
+        }
 
 
 class SFTDataset(Dataset):
-    """Instruction SFT dataset with prompt tokens masked from loss."""
+    """Multi-turn instruction data with everything but assistant turns masked out."""
 
-    def __init__(self, tokenizer: Tokenizer, path: str | Path, block_size: int) -> None:
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        path: str | Path,
+        block_size: int,
+        drop_overlong: bool = True,
+    ) -> None:
         self.examples: List[Dict[str, torch.Tensor]] = []
-        eos = token_id(tokenizer, "<eos>")
-
         p = _resolve_data_path(path)
-        records: List[tuple[str, str]] = []
+
+        rendered: List[Tuple[str, List[Tuple[int, int]]]] = []
         for row in self._read_rows(p):
-            instruction = str(row.get("instruction", "")).strip()
-            input_text = str(row.get("input", "")).strip()
-            response = str(row.get("response", row.get("output", ""))).strip()
-            if not instruction or not response:
+            messages = messages_from_record(row)
+            if not messages or not any(m["role"] == "assistant" for m in messages):
                 continue
-            prompt = format_prompt(instruction, input_text)
-            records.append((prompt, response))
+            rendered.append(render_chat(messages))
 
-        if not records:
-            raise ValueError(f"No usable SFT examples found in {p}")
+        if not rendered:
+            raise ValueError(f"No usable SFT conversations found in {p}")
 
-        prompt_texts, response_texts = zip(*records)
-        prompt_encodings = tokenizer.encode_batch(list(prompt_texts))
-        response_encodings = tokenizer.encode_batch(list(response_texts))
-
-        for prompt_enc, response_enc in zip(prompt_encodings, response_encodings):
-            prompt_ids = prompt_enc.ids
-            response_ids = response_enc.ids + [eos]
-            ids = (prompt_ids + response_ids)[:block_size]
-            labels = ([-100] * len(prompt_ids) + response_ids)[:block_size]
+        self.dropped = 0
+        # Encode the full conversation in one pass. Encoding prompt and response
+        # separately (as this previously did) shifts byte-level BPE boundaries at
+        # the join, so the model trained on token sequences it never sees at
+        # inference time.
+        encodings = tokenizer.encode_batch([text for text, _ in rendered])
+        for (text, spans), enc in zip(rendered, encodings):
+            ids = enc.ids
             if len(ids) < 2:
+                continue
+            if len(ids) > block_size:
+                # Truncating cuts the response mid-sentence and removes its end-of-turn
+                # token, teaching the model never to stop. Dropping is the honest fix.
+                if drop_overlong:
+                    self.dropped += 1
+                    continue
+                ids = ids[:block_size]
+
+            labels = [-100] * len(ids)
+            for i, (tok_start, tok_end) in enumerate(enc.offsets[: len(ids)]):
+                if tok_end <= tok_start:
+                    continue
+                for span_start, span_end in spans:
+                    if tok_start >= span_start and tok_end <= span_end:
+                        labels[i] = ids[i]
+                        break
+
+            if all(label == -100 for label in labels[1:]):
                 continue
             self.examples.append(
                 {
@@ -287,18 +344,24 @@ class SFTDataset(Dataset):
 
         if not self.examples:
             raise ValueError(f"No usable SFT examples found in {p}")
+        if self.dropped:
+            print(
+                f"SFT: dropped {self.dropped:,} conversations longer than block_size={block_size} "
+                "(truncating them would train the model never to emit an end-of-turn token)."
+            )
 
     @staticmethod
     def _read_rows(path: Path) -> Iterator[Mapping[str, object]]:
-        if path.suffix.lower() == ".jsonl":
+        suffix = path.suffix.lower()
+        if suffix == ".jsonl":
             with path.open("r", encoding="utf-8") as handle:
                 for line in handle:
                     if line.strip():
                         yield json.loads(line)
             return
-        if path.suffix.lower() == ".json":
+        if suffix == ".json":
             payload = json.loads(path.read_text(encoding="utf-8"))
-            for row in (payload if isinstance(payload, list) else [payload]):
+            for row in payload if isinstance(payload, list) else [payload]:
                 yield row
             return
         raise ValueError("SFT data must be .jsonl or .json")
@@ -314,7 +377,6 @@ def pad_collate(batch: Sequence[Mapping[str, torch.Tensor]], pad_id: int) -> Dic
     max_len = max(x["input_ids"].numel() for x in batch)
     input_ids: List[torch.Tensor] = []
     labels: List[torch.Tensor] = []
-    attention_mask: List[torch.Tensor] = []
 
     for item in batch:
         ids = item["input_ids"]
@@ -322,10 +384,15 @@ def pad_collate(batch: Sequence[Mapping[str, torch.Tensor]], pad_id: int) -> Dic
         pad_len = max_len - ids.numel()
         input_ids.append(torch.cat([ids, torch.full((pad_len,), pad_id, dtype=torch.long)]))
         labels.append(torch.cat([lab, torch.full((pad_len,), -100, dtype=torch.long)]))
-        attention_mask.append(torch.cat([torch.ones_like(ids), torch.zeros((pad_len,), dtype=torch.long)]))
 
-    return {
-        "input_ids": torch.stack(input_ids),
-        "labels": torch.stack(labels),
-        "attention_mask": torch.stack(attention_mask),
-    }
+    return {"input_ids": torch.stack(input_ids), "labels": torch.stack(labels)}
+
+
+class PadCollate:
+    """Picklable collate function for DataLoader workers."""
+
+    def __init__(self, pad_id: int) -> None:
+        self.pad_id = pad_id
+
+    def __call__(self, batch):
+        return pad_collate(batch, self.pad_id)

@@ -35,6 +35,9 @@ venv.bak/
 
 # Project checkpoints & heavy data
 runs/
+corpus/
+*.bin
+*.meta.json
 geocentric2_3/
 *.pt
 secret.key

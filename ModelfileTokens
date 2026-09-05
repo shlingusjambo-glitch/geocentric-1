@@ -1,8 +1,0 @@
-FROM gemma4-fast:latest
-
-# Expand the context window so Claude Code doesn't clip mid-session
-PARAMETER num_ctx 65536
-
-# Slight tuning to keep the agent focused on structured tool outputs
-PARAMETER temperature 0.2
-PARAMETER top_p 0.9

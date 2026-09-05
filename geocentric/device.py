@@ -1,125 +1,126 @@
 from __future__ import annotations
 
-import platform
+import os
 from dataclasses import dataclass
+from typing import Optional
 
-import psutil
 import torch
 
 
-@dataclass(frozen=True)
+@dataclass
 class RuntimeInfo:
     device: torch.device
     dtype: torch.dtype
-    mps_built: bool
-    mps_available: bool
-    cuda_available: bool
+    name: str
     total_memory_gb: float
-    available_memory_gb: float
+    supports_bf16: bool
+    supports_flash: bool
 
 
-def select_device(prefer_cuda: bool = True, prefer_mps: bool = True) -> torch.device:
-    """Pick NVIDIA CUDA or Apple MPS when available, otherwise CPU."""
+def select_device(prefer_cuda: bool = True) -> torch.device:
     if prefer_cuda and torch.cuda.is_available():
         return torch.device("cuda")
-    if prefer_mps and torch.backends.mps.is_available():
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
 
 
+def supports_bf16(device: torch.device) -> bool:
+    if device.type == "cuda":
+        return torch.cuda.is_bf16_supported()
+    if device.type == "mps":
+        return True
+    return hasattr(torch, "bfloat16")
+
+
 def resolve_dtype(device: torch.device, requested: str = "auto") -> torch.dtype:
-    """Resolve model dtype. bfloat16/float32 is safer for training stability without a GradScaler."""
-    key = requested.lower().strip()
-    if key in {"float32", "fp32", "32"}:
+    requested = (requested or "auto").lower()
+    if requested in {"fp32", "float32"}:
         return torch.float32
-    if key in {"float16", "fp16", "16", "half"}:
+    if requested in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if requested in {"fp16", "float16"}:
         return torch.float16
-    if key in {"bfloat16", "bf16", "bf"}:
+
+    # bfloat16 has the same exponent range as float32, so it needs no loss scaler and
+    # will not produce the silent NaN cascades float16 does on a from-scratch model.
+    if supports_bf16(device):
         return torch.bfloat16
-    if key == "auto":
-        if device.type == "cuda":
-            props = torch.cuda.get_device_properties(device)
-            if props.major >= 8 and torch.cuda.is_bf16_supported():
-                return torch.bfloat16
-            return torch.float16
-        if device.type == "mps":
-            # MPS supports bfloat16 in newer PyTorch, which is much safer than float16 for training stability
-            return torch.bfloat16
-        return torch.float32
-    if key in {"bfloat16", "bf16", "bf"}:
-        if device.type == "cuda":
-            props = torch.cuda.get_device_properties(device)
-            if props.major < 8 or not torch.cuda.is_bf16_supported():
-                raise ValueError(
-                    "bfloat16 is not supported on this CUDA GPU. Use --dtype float16 or auto instead."
-                )
-        return torch.bfloat16
-    raise ValueError(f"Unsupported dtype: {requested}")
+    if device.type == "cuda":
+        return torch.float16
+    return torch.float32
 
 
-def runtime_check(device: torch.device, dtype: torch.dtype) -> RuntimeInfo:
-    memory = psutil.virtual_memory()
-    info = RuntimeInfo(
-        device=device,
-        dtype=dtype,
-        mps_built=torch.backends.mps.is_built(),
-        mps_available=torch.backends.mps.is_available(),
-        cuda_available=torch.cuda.is_available(),
-        total_memory_gb=memory.total / 1024**3,
-        available_memory_gb=memory.available / 1024**3,
-    )
-
-    print("=" * 80)
-    print("Geocentric 2.1 runtime check")
-    print("=" * 80)
-    print(f"Platform: {platform.platform()}")
-    print(f"Python: {platform.python_version()}")
-    print(f"PyTorch: {torch.__version__}")
-    print(f"MPS built: {info.mps_built}")
-    print(f"MPS available: {info.mps_available}")
-    print(f"CUDA available: {info.cuda_available}")
-    if info.cuda_available:
-        print(f"CUDA device count: {torch.cuda.device_count()}")
-        for i in range(torch.cuda.device_count()):
-            print(f"  Device {i}: {torch.cuda.get_device_name(i)}")
-    print(f"Selected device: {info.device}")
-    print(f"Selected dtype: {info.dtype}")
-    print(f"System memory total: {info.total_memory_gb:.2f} GB")
-    print(f"System memory available: {info.available_memory_gb:.2f} GB")
-
+def enable_fast_math() -> None:
+    """Turn on the TF32 and matmul settings that cost accuracy we do not need."""
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
     try:
         torch.set_float32_matmul_precision("high")
     except Exception:
         pass
 
-    if device.type == "mps":
-        probe = torch.ones((8, 8), device=device, dtype=torch.float16)
-        probe = probe @ probe
-        torch.mps.synchronize()
-        print(f"MPS probe mean: {probe.float().mean().item():.4f}")
-        print("Mac GPU communication: OK")
-    elif device.type == "cuda":
-        # TF32 gives ~8x throughput vs FP32 on Ampere+ for matmuls and convolutions.
-        # Both flags are required — matmul covers Linear layers, cudnn covers everything else.
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        probe = torch.ones((8, 8), device=device, dtype=torch.float16)
-        probe = probe @ probe
-        torch.cuda.synchronize()
-        print(f"CUDA probe mean: {probe.float().mean().item():.4f}")
-        print(f"NVIDIA GPU communication: OK (Device: {torch.cuda.get_device_name(device)})")
-    else:
-        print("MPS and CUDA unavailable. Running on CPU.")
 
-    print("=" * 80)
+def runtime_check(device: torch.device, dtype: torch.dtype) -> RuntimeInfo:
+    name = "CPU"
+    total = 0.0
+    flash = False
+    if device.type == "cuda":
+        props = torch.cuda.get_device_properties(device)
+        name = props.name
+        total = props.total_memory / 1024**3
+        flash = props.major >= 8
+    elif device.type == "mps":
+        name = "Apple Silicon (MPS)"
+
+    info = RuntimeInfo(
+        device=device,
+        dtype=dtype,
+        name=name,
+        total_memory_gb=total,
+        supports_bf16=supports_bf16(device),
+        supports_flash=flash,
+    )
+    mem = f", {total:.1f} GB VRAM" if total else ""
+    print(f"Device: {name} ({device.type}{mem}) | dtype: {str(dtype).replace('torch.', '')}")
+    if device.type == "cpu":
+        print("WARNING: training on CPU. Expect this to be roughly 100x slower than a GPU.")
     return info
 
 
-def cleanup_mps() -> None:
-    """Clear cached memory on MPS or CUDA devices."""
-    if torch.backends.mps.is_available():
-        torch.mps.empty_cache()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+def peak_memory_gb(device: torch.device) -> float:
+    if device.type == "cuda":
+        return torch.cuda.max_memory_allocated(device) / 1024**3
+    return 0.0
 
+
+def device_flops(device: torch.device, dtype: torch.dtype) -> Optional[float]:
+    """Rough peak throughput used only for the model FLOPs utilization readout."""
+    if device.type != "cuda":
+        return None
+    name = torch.cuda.get_device_properties(device).name.lower()
+    table = {
+        "h100": 989e12, "a100": 312e12, "l40": 181e12, "4090": 165e12, "4080": 97e12,
+        "3090": 71e12, "3080": 59e12, "4070": 58e12, "3070": 40e12, "a10": 125e12,
+        "2080": 40e12, "2070": 26e12, "2060": 26e12, "t4": 65e12,
+    }
+    for key, value in table.items():
+        if key in name:
+            return value if dtype != torch.float32 else value / 8
+    return None
+
+
+def cleanup(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        try:
+            torch.mps.empty_cache()
+        except Exception:
+            pass
+
+
+# Retained for callers that still import the old name.
+def cleanup_mps() -> None:
+    cleanup(torch.device("mps"))

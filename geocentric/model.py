@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -14,14 +14,25 @@ import torch.nn.functional as F
 @dataclass
 class GPTConfig:
     vocab_size: int
-    block_size: int = 256
-    n_layer: int = 6
-    n_head: int = 6
-    n_embd: int = 384
-    dropout: float = 0.1
-    bias: bool = True
-    model_name: str = "Geocentric 2.1"
+    block_size: int = 1024
+    n_layer: int = 12
+    n_head: int = 12
+    n_kv_head: Optional[int] = None
+    n_embd: int = 768
+    dropout: float = 0.0
+    bias: bool = False
+    rope_theta: float = 10000.0
+    norm_eps: float = 1e-5
+    model_name: str = "Geocentric"
     gradient_checkpointing: bool = False
+
+    def __post_init__(self) -> None:
+        if self.n_kv_head is None:
+            self.n_kv_head = self.n_head
+        if self.n_embd % self.n_head != 0:
+            raise ValueError(f"n_embd ({self.n_embd}) must be divisible by n_head ({self.n_head})")
+        if self.n_head % self.n_kv_head != 0:
+            raise ValueError(f"n_head ({self.n_head}) must be divisible by n_kv_head ({self.n_kv_head})")
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
@@ -30,108 +41,217 @@ class GPTConfig:
     def load(cls, path: str | Path) -> "GPTConfig":
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
-            vocab_size=data.get("vocab_size", data.get("vocab_size", 0)),
-            block_size=data.get("block_size", data.get("max_position_embeddings", 256)),
-            n_layer=data.get("n_layer", data.get("num_hidden_layers", 6)),
-            n_head=data.get("n_head", data.get("num_attention_heads", 6)),
-            n_embd=data.get("n_embd", data.get("hidden_size", 384)),
-            dropout=data.get("dropout", 0.1),
-            bias=data.get("bias", True),
-            model_name=data.get("model_name", data.get("model_type", "Geocentric 2.1")),
+            vocab_size=data.get("vocab_size", 0),
+            block_size=data.get("block_size", data.get("max_position_embeddings", 1024)),
+            n_layer=data.get("n_layer", data.get("num_hidden_layers", 12)),
+            n_head=data.get("n_head", data.get("num_attention_heads", 12)),
+            n_kv_head=data.get("n_kv_head", data.get("num_key_value_heads")),
+            n_embd=data.get("n_embd", data.get("hidden_size", 768)),
+            dropout=data.get("dropout", 0.0),
+            bias=data.get("bias", False),
+            rope_theta=data.get("rope_theta", 10000.0),
+            norm_eps=data.get("norm_eps", 1e-5),
+            model_name=data.get("model_name", data.get("model_type", "Geocentric")),
             gradient_checkpointing=data.get("gradient_checkpointing", False),
         )
 
 
-class CausalSelfAttention(nn.Module):
-    def __init__(self, config: GPTConfig) -> None:
+class RMSNorm(nn.Module):
+    """RMSNorm — no mean subtraction, no bias. Cheaper than LayerNorm and empirically
+    equal or better for decoder-only LMs (used by Llama, Mistral, Gemma)."""
+
+    def __init__(self, dim: int, eps: float = 1e-5) -> None:
         super().__init__()
-        if config.n_embd % config.n_head != 0:
-            raise ValueError("n_embd must be divisible by n_head")
-        self.n_head = config.n_head
-        self.head_dim = config.n_embd // config.n_head
-        self.qkv = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
-        self.proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
-        self.attn_dropout = nn.Dropout(config.dropout)
-        self.resid_dropout = nn.Dropout(config.dropout)
-        mask = torch.tril(torch.ones(config.block_size, config.block_size, dtype=torch.bool))
-        self.register_buffer("causal_mask", mask.view(1, 1, config.block_size, config.block_size), persistent=False)
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, t, c = x.shape
-        q, k, v = self.qkv(x).split(c, dim=2)
-        q = q.view(b, t, self.n_head, self.head_dim).transpose(1, 2)
-        k = k.view(b, t, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(b, t, self.n_head, self.head_dim).transpose(1, 2)
+        # Normalize in float32 for stability under bf16 autocast, then cast back.
+        dtype = x.dtype
+        x = x.float()
+        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return (x * self.weight.float()).to(dtype)
 
-        if hasattr(F, "scaled_dot_product_attention"):
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                dropout_p=self.attn_dropout.p if self.training else 0.0,
-                is_causal=True,
-            )
+
+def build_rope_cache(
+    head_dim: int, max_len: int, theta: float, device: torch.device, dtype: torch.dtype
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
+    positions = torch.arange(max_len, device=device).float()
+    freqs = torch.outer(positions, inv_freq)
+    return torch.cos(freqs).to(dtype), torch.sin(freqs).to(dtype)
+
+
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """x: (B, H, T, D). cos/sin: (T, D/2). Rotary position embedding."""
+    x1, x2 = x.float().chunk(2, dim=-1)
+    cos = cos[None, None, :, :].float()
+    sin = sin[None, None, :, :].float()
+    out = torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
+    return out.to(x.dtype)
+
+
+class KVCache:
+    """Per-layer key/value cache so generation is O(1) per token instead of O(T)."""
+
+    def __init__(self) -> None:
+        self.k: Optional[torch.Tensor] = None
+        self.v: Optional[torch.Tensor] = None
+
+    def append(self, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.k is None:
+            self.k, self.v = k, v
         else:
-            att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            att = att.masked_fill(~self.causal_mask[:, :, :t, :t], torch.finfo(att.dtype).min)
-            att = F.softmax(att.float(), dim=-1).to(q.dtype)
-            att = self.attn_dropout(att)
-            y = att @ v
+            self.k = torch.cat([self.k, k], dim=2)
+            self.v = torch.cat([self.v, v], dim=2)
+        return self.k, self.v
 
-        y = y.transpose(1, 2).contiguous().view(b, t, c)
-        y = self.resid_dropout(self.proj(y))
-        return y
+    @property
+    def length(self) -> int:
+        return 0 if self.k is None else self.k.size(2)
 
 
-class MLP(nn.Module):
+class CausalSelfAttention(nn.Module):
+    """Causal attention with rotary embeddings and optional grouped-query attention.
+
+    GQA (n_kv_head < n_head) shrinks the KV cache and the KV projections, which is
+    where most of the memory and bandwidth cost of generation lives.
+    """
+
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
-        self.fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.n_head = config.n_head
+        self.n_kv_head = config.n_kv_head or config.n_head
+        self.head_dim = config.n_embd // config.n_head
+        self.n_rep = self.n_head // self.n_kv_head
+        self.dropout = config.dropout
+
+        self.q_proj = nn.Linear(config.n_embd, self.n_head * self.head_dim, bias=config.bias)
+        self.k_proj = nn.Linear(config.n_embd, self.n_kv_head * self.head_dim, bias=config.bias)
+        self.v_proj = nn.Linear(config.n_embd, self.n_kv_head * self.head_dim, bias=config.bias)
+        self.proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.resid_dropout = nn.Dropout(config.dropout)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        cache: Optional[KVCache] = None,
+    ) -> torch.Tensor:
+        b, t, c = x.shape
+
+        q = self.q_proj(x).view(b, t, self.n_head, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(b, t, self.n_kv_head, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(b, t, self.n_kv_head, self.head_dim).transpose(1, 2)
+
+        q = apply_rope(q, cos, sin)
+        k = apply_rope(k, cos, sin)
+
+        if cache is not None:
+            k, v = cache.append(k, v)
+
+        if self.n_rep > 1:
+            k = k.repeat_interleave(self.n_rep, dim=1)
+            v = v.repeat_interleave(self.n_rep, dim=1)
+
+        # is_causal is only correct when q and k have equal length. During cached
+        # decoding a single query attends to the whole prefix, which is already causal.
+        is_causal = cache is None or t > 1
+        y = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=is_causal,
+        )
+
+        y = y.transpose(1, 2).contiguous().view(b, t, c)
+        return self.resid_dropout(self.proj(y))
+
+
+class SwiGLU(nn.Module):
+    """SwiGLU feed-forward. Consistently beats GELU at matched parameter count,
+    which is why every modern open LM uses it."""
+
+    def __init__(self, config: GPTConfig) -> None:
+        super().__init__()
+        # 8/3 * n_embd keeps parameter count equal to a 4x GELU MLP despite the
+        # third projection, then round to a multiple of 128 for tensor-core alignment.
+        hidden = int(8 * config.n_embd / 3)
+        hidden = 128 * ((hidden + 127) // 128)
+        self.gate = nn.Linear(config.n_embd, hidden, bias=config.bias)
+        self.up = nn.Linear(config.n_embd, hidden, bias=config.bias)
+        self.down = nn.Linear(hidden, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # approximate='tanh' GELU is significantly faster on both CUDA and MPS
-        return self.dropout(self.proj(F.gelu(self.fc(x), approximate='tanh')))
+        return self.dropout(self.down(F.silu(self.gate(x)) * self.up(x)))
 
 
 class Block(nn.Module):
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_1 = RMSNorm(config.n_embd, eps=config.norm_eps)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
-        self.gradient_checkpointing = getattr(config, "gradient_checkpointing", False)
+        self.ln_2 = RMSNorm(config.n_embd, eps=config.norm_eps)
+        self.mlp = SwiGLU(config)
+        self.gradient_checkpointing = config.gradient_checkpointing
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        cache: Optional[KVCache] = None,
+    ) -> torch.Tensor:
         if self.gradient_checkpointing and self.training:
             import torch.utils.checkpoint
-            return torch.utils.checkpoint.checkpoint(self._forward_impl, x, use_reentrant=False)
-        else:
-            return self._forward_impl(x)
 
-    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln_1(x))
+            return torch.utils.checkpoint.checkpoint(
+                self._forward_impl, x, cos, sin, cache, use_reentrant=False
+            )
+        return self._forward_impl(x, cos, sin, cache)
+
+    def _forward_impl(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        cache: Optional[KVCache],
+    ) -> torch.Tensor:
+        x = x + self.attn(self.ln_1(x), cos, sin, cache)
         x = x + self.mlp(self.ln_2(x))
         return x
 
 
 class GeocentricGPT(nn.Module):
-    """Small GPT-style decoder-only causal language model trained from random init."""
+    """Decoder-only causal language model trained from random init.
+
+    Architecture: pre-norm residual blocks, RMSNorm, rotary position embeddings,
+    grouped-query attention, SwiGLU feed-forward, tied input/output embeddings.
+    """
 
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)
-        self.position_embedding = nn.Embedding(config.block_size, config.n_embd)
         self.dropout = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
-        self.ln_f = nn.LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_f = RMSNorm(config.n_embd, eps=config.norm_eps)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.lm_head.weight = self.token_embedding.weight
+
         self.apply(self._init_weights)
+        # Scaled init on residual output projections. Without this the residual
+        # stream variance grows with depth and deep models train unstably or waste
+        # the first several thousand steps recovering. (GPT-2 paper, section 2.3.)
+        residual_std = 0.02 / math.sqrt(2 * config.n_layer)
+        for name, param in self.named_parameters():
+            if name.endswith("attn.proj.weight") or name.endswith("mlp.down.weight"):
+                torch.nn.init.normal_(param, mean=0.0, std=residual_std)
+
+        self._rope_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        self._rope_key: Optional[Tuple[int, str, torch.dtype]] = None
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
@@ -141,35 +261,59 @@ class GeocentricGPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def _rope(self, device: torch.device, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
+        head_dim = self.config.n_embd // self.config.n_head
+        key = (self.config.block_size, str(device), dtype)
+        if self._rope_key != key:
+            self._rope_cache = build_rope_cache(
+                head_dim, self.config.block_size, self.config.rope_theta, device, dtype
+            )
+            self._rope_key = key
+        assert self._rope_cache is not None
+        return self._rope_cache
+
     def forward(
         self,
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        caches: Optional[List[KVCache]] = None,
+        position_offset: int = 0,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         b, t = input_ids.shape
-        if t > self.config.block_size:
-            raise ValueError(f"Sequence length {t} exceeds block size {self.config.block_size}")
+        if position_offset + t > self.config.block_size:
+            raise ValueError(
+                f"Sequence position {position_offset + t} exceeds block size {self.config.block_size}"
+            )
 
-        pos = torch.arange(0, t, dtype=torch.long, device=input_ids.device)
-        x = self.token_embedding(input_ids) + self.position_embedding(pos)[None, :, :]
-        x = self.dropout(x)
-        for block in self.blocks:
-            x = block(x)
+        x = self.dropout(self.token_embedding(input_ids))
+        cos_all, sin_all = self._rope(input_ids.device, torch.float32)
+        cos = cos_all[position_offset : position_offset + t]
+        sin = sin_all[position_offset : position_offset + t]
+
+        for i, block in enumerate(self.blocks):
+            x = block(x, cos, sin, caches[i] if caches is not None else None)
         x = self.ln_f(x)
-        logits = self.lm_head(x)
 
         loss = None
         if labels is not None:
-            # Keep logits in their native dtype — cross_entropy handles mixed precision
-            # internally. Casting to float32 here forces an expensive full-tensor copy
-            # every forward pass, which is the single biggest training throughput killer.
+            logits = self.lm_head(x)
             loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
+                logits.view(-1, logits.size(-1)).float(),
                 labels.reshape(-1),
                 ignore_index=-100,
             )
+        else:
+            # Inference only needs the last position's logits. Projecting the whole
+            # sequence through a 32k-wide head is pure waste during generation.
+            logits = self.lm_head(x[:, -1:, :]) if caches is not None else self.lm_head(x)
         return logits, loss
+
+    def num_params(self, non_embedding: bool = False) -> int:
+        n = sum(p.numel() for p in self.parameters())
+        if non_embedding:
+            n -= self.token_embedding.weight.numel()
+        return n
 
     @torch.no_grad()
     def generate(
@@ -178,42 +322,71 @@ class GeocentricGPT(nn.Module):
         max_new_tokens: int,
         temperature: float = 0.8,
         top_k: int = 50,
+        top_p: float = 0.95,
+        min_p: float = 0.0,
         eos_id: Optional[int] = None,
-        repetition_penalty: float = 1.15,
+        repetition_penalty: float = 1.1,
+        repetition_window: int = 128,
     ) -> torch.Tensor:
+        self.eval()
+        caches = [KVCache() for _ in self.blocks]
+        prompt_len = input_ids.size(1)
+        if prompt_len > self.config.block_size:
+            input_ids = input_ids[:, -self.config.block_size :]
+            prompt_len = input_ids.size(1)
+
+        generated = input_ids
+        cur = input_ids
+        offset = 0
+
         for _ in range(max_new_tokens):
-            idx_cond = input_ids[:, -self.config.block_size :]
-            logits, _ = self(idx_cond)
+            # Stop before the sequence itself would exceed the context, not merely
+            # before the next forward pass would.
+            if generated.size(1) >= self.config.block_size:
+                break
+            if offset + cur.size(1) > self.config.block_size:
+                break
+            logits, _ = self(cur, caches=caches, position_offset=offset)
+            offset += cur.size(1)
             logits = logits[:, -1, :].float()
-            
-            # Vectorized repetition penalty — avoids slow Python loop over tokens
-            if repetition_penalty != 1.0 and input_ids.size(1) > 0:
-                # Gather scores for all previously seen tokens in one shot
-                score = torch.gather(logits, 1, input_ids)
-                # Divide positive logits, multiply negative ones (standard reptition penalty)
-                score = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
-                logits.scatter_(1, input_ids, score)
-                            
+
+            # Penalize only the recent window. Penalizing the entire prompt makes the
+            # model avoid the user's own words, which reads as evasive and off-topic.
+            if repetition_penalty != 1.0 and repetition_window > 0:
+                recent = generated[:, -repetition_window:]
+                score = torch.gather(logits, 1, recent)
+                score = torch.where(
+                    score > 0, score / repetition_penalty, score * repetition_penalty
+                )
+                logits.scatter_(1, recent, score)
+
             if temperature <= 0:
                 next_id = torch.argmax(logits, dim=-1, keepdim=True)
             else:
                 logits = logits / max(temperature, 1e-5)
                 if top_k > 0:
                     values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < values[:, [-1]]] = -float("inf")
+                    logits = logits.masked_fill(logits < values[:, [-1]], -float("inf"))
                 probs = F.softmax(logits, dim=-1)
-                # Robust sanitization of probs to prevent multinomial RuntimeError
-                if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any() or probs.sum() <= 0:
-                    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-                    if probs.sum() <= 0:
-                        probs = torch.ones_like(probs) / probs.size(-1)
-                    else:
-                        probs = probs / probs.sum()
+                if min_p > 0.0:
+                    threshold = min_p * probs.max(dim=-1, keepdim=True).values
+                    probs = torch.where(probs < threshold, torch.zeros_like(probs), probs)
+                if 0.0 < top_p < 1.0:
+                    sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
+                    cumulative = sorted_probs.cumsum(dim=-1)
+                    keep = cumulative - sorted_probs < top_p
+                    keep[:, 0] = True
+                    sorted_probs = sorted_probs * keep
+                    probs = torch.zeros_like(probs).scatter_(1, sorted_idx, sorted_probs)
+                total = probs.sum(dim=-1, keepdim=True)
+                probs = torch.where(total > 0, probs / total, torch.ones_like(probs) / probs.size(-1))
                 next_id = torch.multinomial(probs, num_samples=1)
-            input_ids = torch.cat((input_ids, next_id), dim=1)
-            if eos_id is not None and int(next_id.item()) == eos_id:
+
+            generated = torch.cat([generated, next_id], dim=1)
+            cur = next_id
+            if eos_id is not None and bool((next_id == eos_id).all()):
                 break
-        return input_ids
+        return generated
 
 
 def count_parameters(model: nn.Module) -> int:

@@ -1,4 +1,4 @@
-"""Geocentric 2.1: tiny from-scratch local LLM trainer and web server."""
+"""Geocentric — train a causal language model from scratch."""
 
-__version__ = "2.1.1"
-MODEL_NAME = "Geocentric 2.1"
+__version__ = "3.0.0"
+MODEL_NAME = "Geocentric"

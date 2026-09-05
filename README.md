@@ -1,172 +1,161 @@
-# Geocentric 2.1 - Local LLM Lab and Agent Desktop
+# Geocentric
 
-Geocentric 2.1 is an educational, high-performance causal Language Model platform and native macOS agent workspace. The training stack can build a decoder-only Transformer **entirely from scratch**: you control the data diet, tokenizer, and architecture. The desktop app adds a local chat interface with Ollama model management, workspace tools, scheduled tasks, and web/search-enabled agent runs.
-
-This repository features a **custom socket-based cross-OS network bridge** enabling seamless collaborative pipeline-parallel training between **Apple Silicon Macs** (using MPS) and **Linux machines** (using CUDA).
-
-The project is published for the SnowStudios GitHub organization, owned by the KiwiOnGit GitHub account.
-
----
-
-## 🚀 New: Hardware-Speed Wizard
-
-For the fastest local path on Apple Silicon or NVIDIA CUDA, use the new interactive wizard. It asks whether to run `pretrain`, `sft`, or `pipeline`, asks for the model name/size, asks what capabilities the chatbot should have, then applies hardware-tuned settings automatically.
+Train a causal language model from scratch — tokenizer, architecture, data diet, and
+all — on a single NVIDIA GPU. No agents, no web search, no desktop app. Just the
+training lab.
 
 ```bash
-python -m geocentric.cli wizard
-# alias:
-python -m geocentric.cli auto
-```
-
-You can also keep using the normal commands and add the speed/capability flags:
-
-```bash
-python -m geocentric.cli pipeline \
-  --data_path data/wikipedia_pretrain.txt \
+pip install -e .
+geocentric plan --preset 250m          # what will this cost me?
+geocentric pipeline \
+  --data_path data/wikitext103 \
   --sft_data_path data/alpaca_data.json \
-  --auto-optimize \
-  --ask-model \
-  --ask-capabilities
+  --preset 250m
+geocentric chat --model_dir runs/geocentric
 ```
 
-`--auto-optimize` detects Mac MPS, NVIDIA CUDA, or CPU and adjusts `preset`, `dtype`, `batch_size`, `sft_batch_size`, `gradient_accumulation_steps`, DataLoader workers, checkpoint frequency, metric writes, and CUDA compile mode for speed. On RTX 2060-class 6 GB CUDA cards it defaults to a smaller fast preset instead of trying huge batches that crawl or crash. On Apple Silicon it keeps workers at `0`, avoids torch.compile, and reduces disk sync overhead.
+---
 
+## What the model is
 
-## ⚡ Quick Start: 3-Step Local Training
+A decoder-only transformer built the way current open models are built:
 
-Train a tiny seed model locally in less than 2 minutes to test the whole pipeline:
+| Component | Choice |
+|---|---|
+| Normalization | RMSNorm, pre-norm residual blocks |
+| Position | Rotary embeddings (RoPE) |
+| Attention | Grouped-query attention with a KV cache |
+| Feed-forward | SwiGLU, hidden width 8/3·d rounded to 128 |
+| Embeddings | Tied input/output |
+| Init | 0.02, scaled to 0.02/√(2·n_layer) on residual projections |
+| Precision | bf16 autocast over float32 master weights |
+
+Context length defaults to 1024 tokens (2048 at 1B+), and the vocabulary to 32,000.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `plan` | Show architecture and token budget for a parameter target |
+| `train-tokenizer` | Train a byte-level BPE tokenizer |
+| `prepare` | Tokenize a corpus into binary shards |
+| `pretrain` | Train from random initialization |
+| `sft` | Instruction fine-tune a pretrained checkpoint |
+| `pipeline` | `pretrain` then `sft` in one command |
+| `chat` | Interactive chat with streaming output |
+| `generate` | One-shot completion |
+| `list-models` | Show local checkpoints |
+
+### Sizing a run
+
+`plan` tells you what you are signing up for before you spend a week on it:
+
+```
+$ geocentric plan --preset 250m
+Parameters:        249,396,480
+Context length:    1,024 tokens
+Token budget:      4,987,929,600 (4.99B) for compute-optimal training
+Wikipedia (en) is roughly 4B tokens, so this needs about 1.2x English Wikipedia.
+```
+
+The token budget is the number that decides whether your model is any good. A 250M
+model wants roughly 5B training tokens. Training it on 200M tokens produces exactly
+what you would expect: correct grammar, correct punctuation, and no idea what it is
+talking about.
+
+### Pretraining
 
 ```bash
-# 1. Train Tokenizer
-python -m geocentric.cli train-tokenizer --data_path data/pretrain_seed.txt
-
-# 2. Pretrain & SFT pipeline in a single command
-python -m geocentric.cli pipeline \
-  --data_path data/pretrain_seed.txt \
-  --sft_data_path data/guided_sft_seed.jsonl \
-  --preset tiny \
-  --pretrain_epochs 2 \
-  --sft_epochs 2
-
-# 3. Serve the Web Chat UI
-python -m geocentric.cli serve --model_dir runs/geocentric2_1 --port 8000
+geocentric pretrain \
+  --data_path data/wikitext103 \
+  --output_dir runs/geocentric \
+  --preset 250m \
+  --epochs 1
 ```
-Open **`http://localhost:8000`** to chat with your local model!
 
----
+Batch size and gradient accumulation are chosen from your VRAM to land near 500k
+tokens per optimizer step; override either with `--batch_size` /
+`--gradient_accumulation_steps`. The corpus is tokenized once into
+`runs/geocentric/corpus/*.bin` and reused on every later run. Interrupting with
+Ctrl+C saves model *and* optimizer state; rerunning the same command resumes at the
+step it stopped on.
 
-## 🖥️ Native macOS Agent App
+Hit OOM? Add `--gradient_checkpointing` — roughly 30% slower, much smaller.
 
-The `mac_app/` folder contains the Geocentric desktop host. It starts the Python agent service automatically, manages Ollama models, and routes explicit tool requests such as “make a file,” “run this script,” or “search today’s news” through the tool runner instead of plain chat.
+### Fine-tuning
 
 ```bash
-cd mac_app
-./build_pkg.sh
-open Geocentric.app
+geocentric sft --model_dir runs/geocentric --sft_data_path data/alpaca_data.json
 ```
 
-`./build_pkg.sh` also creates a distributable `Geocentric.dmg` at the repository root. On first launch, the app creates its private Python environment, installs the bundled requirements, starts the local service, and opens the native workspace without a manual setup screen.
+Accepts `{"instruction", "input", "output"}`, `{"messages": [...]}`, and ShareGPT
+`{"conversations": [...]}`. Multi-turn conversations are supported and only the
+assistant's turns contribute to the loss.
 
-For public distribution, set `GEOCENTRIC_CODESIGN_IDENTITY` to a Developer ID Application identity before building. Set `GEOCENTRIC_NOTARY_PROFILE` to a saved `notarytool` keychain profile to submit and staple the DMG automatically.
+## Data formats
 
-In the app:
+Plain `.txt`/`.md` files are treated as **one continuous document**. Pass
+`--doc_sep` when your file holds many documents with a real separator:
 
-- Use the single model menu in the toolbar to refresh, download, manage, or switch Ollama models.
-- Use the New Chat button in the toolbar or left drawer to start a clean conversation.
-- Use the Agent status chip to start or inspect the local tool service. A reachable local service is shown as ready.
-- Enable Agent mode for workspace actions. Explicit file, command, project, and web-search requests are routed to tools automatically when the local service is available.
-- Choose a project folder before asking the agent to create or edit files.
-- Review `Implementation Plan.md` in the right Agent Side Panel before complex file-changing work runs; accept to execute or deny to revise.
-- Inspect red/green file diffs after tool edits, then approve or roll back individual file changes.
-- Watch the context gauge, pin multiple files into the composer staging area, and use the telemetry HUD to monitor CPU, memory, disk, and GPU availability.
-- Agent mode includes structured tools for web search, browsing URLs, listing/statting workspace paths, creating directories, copying/moving files, downloading URLs into the workspace, running commands, checking ports, making HTTP requests, and capturing local web views.
+```bash
+geocentric pretrain --data_path corpus.txt --doc_sep $'\n\n\n'
+```
 
-The optional closed-source deployment backend is documented in [CLOUD_SERVER.md](/Users/elywright/geocentric/CLOUD_SERVER.md). Its source folder is created outside this repo at `~/Geocentric Cloud Server/server_backend` so this upstream project stays intact.
+`.jsonl`, `.json`, and `.csv` records are one document each. See
+[DATA_FORMAT.md](DATA_FORMAT.md).
 
-For Supabase server SDK setup, environment variables, and a starter Edge Function handler, see [SUPABASE_SETUP.md](SUPABASE_SETUP.md).
+## Chat template
 
----
+```
+<|system|>
+You are Geocentric, a helpful assistant.<|eot|>
+<|user|>
+What is the capital of France?<|eot|>
+<|assistant|>
+The capital of France is Paris.<|eot|>
+```
 
-## 🌐 Heterogeneous Collaborative Training (Mac + Linux)
+`<|eot|>` is supervised during SFT, which is what teaches the model to stop.
 
-By sharding the model layers across your Mac and Linux PC over a local network, you can train a much larger model (like the `120m` parameter preset) cooperatively!
+## Upgrading from Geocentric 2.1
 
-### 1. Configure the Network Link (Choose Wi-Fi or Cable)
-*   **Via Local Wi-Fi:** Find your Mac's LAN IP (e.g., `192.168.1.30`).
-*   **Via Direct Link Cable (Fastest 🚀):** Connect your Mac and Linux PC with a USB/Thunderbolt cable, then run `python scripts/setuplink.py` on both machines. This automatically sets the dedicated network link IP to `192.168.99.1`.
+**Checkpoints do not carry over.** 2.1 used learned absolute position embeddings,
+LayerNorm and a GELU MLP; loading one now raises an explicit error. Retrain from
+scratch — and given the data bugs described below, you want to anyway.
 
-### 2. Run Pretraining:
-*   **On macOS (Rank 0 - Master):**
-    ```bash
-    python -m geocentric.cli pipeline-train \
-      --master_ip 192.168.1.30 \
-      --master_port 29500 \
-      --rank 0 \
-      --world_size 2 \
-      --data_path data/pretrain_seed.txt \
-      --preset 120m \
-      --block_size 256 \
-      --batch_size 1 \
-      --gradient_accumulation_steps 32 \
-      --epochs 15 \
-      --dtype bfloat16
-    ```
-*   **On Linux (Rank 1 - Worker):**
-    ```bash
-    .venv/bin/python -m geocentric.cli pipeline-train \
-      --master_ip 192.168.1.30 \
-      --master_port 29500 \
-      --rank 1 \
-      --world_size 2 \
-      --data_path data/pretrain_seed.txt \
-      --preset 120m \
-      --block_size 256 \
-      --batch_size 1 \
-      --gradient_accumulation_steps 32 \
-      --epochs 15 \
-      --dtype bfloat16
-    ```
+The agent CLI, provider integrations, tool runtime, web search, macOS app,
+FastAPI server, licensing, and Supabase integration were all removed in 3.0.
 
-### 3. Run Supervised Fine-Tuning (SFT):
-First, download the 5,000 instruction-pair Alpaca dataset by running `.venv/bin/python -m geocentric.cli download-alpaca`.
+## Why 2.1 models came out fluent but off-topic
 
-Then run the SFT command:
-*   **On macOS (Rank 0 - Master):**
-    ```bash
-    python -m geocentric.cli pipeline-train \
-      --master_ip 192.168.1.30 \
-      --master_port 29500 \
-      --rank 0 \
-      --world_size 2 \
-      --data_path data/alpaca_data.json \
-      --preset 120m \
-      --block_size 256 \
-      --batch_size 1 \
-      --gradient_accumulation_steps 32 \
-      --epochs 10 \
-      --dtype bfloat16
-    ```
-*   **On Linux (Rank 1 - Worker):**
-    ```bash
-    .venv/bin/python -m geocentric.cli pipeline-train \
-      --master_ip 192.168.1.30 \
-      --master_port 29500 \
-      --rank 1 \
-      --world_size 2 \
-      --data_path data/alpaca_data.json \
-      --preset 120m \
-      --block_size 256 \
-      --batch_size 1 \
-      --gradient_accumulation_steps 32 \
-      --epochs 10 \
-      --dtype bfloat16
-    ```
+Five defects, each independently damaging, all fixed:
 
----
+1. **Documents were shredded into lines.** The loader yielded plain text one line at
+   a time and the dataset appended `<eos>` after every one, so a corpus became
+   millions of ~15-token fragments each marked end-of-sequence. The model was
+   explicitly taught that context resets every sentence.
+2. **256-token context**, hardcoded for every model under 1B.
+3. **8,192-token vocabulary**, so capacity went into respelling words.
+4. **No scaled residual init**, so deep models spent their early steps recovering
+   from residual-stream blowup.
+5. **SFT at 2e-5**, a fine-tune rate for a trained 7B model. On a small
+   from-scratch model it barely moved the weights, so instruction-following never
+   took hold and the model echoed prompts back.
 
-## 📑 Detailed Flags & Presets
+Plus: the corpus was held in memory as a Python list of ints (~100 bytes/token,
+capping training at a few tens of millions of tokens); prompt and response were
+tokenized separately, shifting BPE boundaries at the join; overlong SFT examples
+were truncated, stripping their stop token and teaching the model never to finish;
+and validation windows were drawn randomly from training documents, so eval loss
+was optimistic.
 
-For a full breakdown of all command-line arguments, system optimization flags, and customized preset dimensions, open the interactive documentation hub:
+## Development
 
-*   **Offline Guide:** Open [USAGE_GUIDE.md](USAGE_GUIDE.md)
-*   **Interactive Web Hub:** Open [index.html](index.html) in your browser!
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The suite pins the behaviors above: documents are not split into lines, `<eos>` is
+rare, SFT masks prompts and supervises the stop token, KV-cached decoding matches a
+full forward pass, and attention is causal.

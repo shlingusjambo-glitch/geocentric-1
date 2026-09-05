@@ -1,414 +1,333 @@
 from __future__ import annotations
 
+import json
 import math
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from geocentric.checkpoint import load_checkpoint, pretrained_checkpoint_name, save_checkpoint
+from geocentric.checkpoint import (
+    load_checkpoint,
+    load_optimizer_state,
+    pretrained_checkpoint_name,
+    save_checkpoint,
+)
+from geocentric.data import PackedDataset, corpus_paths, iter_documents, prepare_corpus
+from geocentric.device import cleanup, enable_fast_math, peak_memory_gb, resolve_dtype, runtime_check, select_device
+from geocentric.model import GPTConfig, GeocentricGPT
+from geocentric.param_compiler import recommended_tokens
+from geocentric.tokenizer_train import DEFAULT_VOCAB_SIZE, load_tokenizer, train_byte_bpe_tokenizer
+from geocentric.trainer import (
+    Throughput,
+    build_optimizer,
+    format_progress,
+    lr_at_step,
+    maybe_compile,
+    set_lr,
+)
 from geocentric.training_metrics import initialize_training_metrics, update_training_metrics
-from geocentric.data import CausalTextDataset, iter_texts, pad_collate
-from geocentric.device import cleanup_mps, resolve_dtype, runtime_check, select_device
-from geocentric.model import GPTConfig, GeocentricGPT, count_parameters
-from geocentric.optimizer import CPUAdamW
-from geocentric.tokenizer_train import load_tokenizer, token_id, train_byte_bpe_tokenizer
 
-class PadCollateWrapper:
-    def __init__(self, pad_id):
-        self.pad_id = pad_id
-
-    def __call__(self, batch):
-        return pad_collate(batch, self.pad_id)
 
 def pretrain(
     data_path: str,
     output_dir: str,
-    vocab_size: int = 8192,
-    block_size: int = 256,
-    n_layer: int = 6,
-    n_head: int = 6,
-    n_embd: int = 384,
-    dropout: float = 0.1,
-    epochs: int = 3,
+    vocab_size: int = DEFAULT_VOCAB_SIZE,
+    block_size: int = 1024,
+    n_layer: int = 12,
+    n_head: int = 12,
+    n_kv_head: Optional[int] = None,
+    n_embd: int = 768,
+    dropout: float = 0.0,
+    epochs: int = 1,
+    max_steps: int = 0,
     batch_size: int = 8,
-    gradient_accumulation_steps: int = 4,
-    learning_rate: float = 3e-4,
-    eval_ratio: float = 0.05,
+    gradient_accumulation_steps: int = 8,
+    learning_rate: float = 6e-4,
+    warmup_ratio: float = 0.01,
+    min_lr_ratio: float = 0.1,
+    weight_decay: float = 0.1,
+    grad_clip: float = 1.0,
+    val_fraction: float = 0.005,
+    doc_sep: Optional[str] = None,
     dtype_name: str = "auto",
     tokenizer_path: Optional[str] = None,
     gradient_checkpointing: bool = False,
-    patience: int = 3,
-    target_loss: float = 0.0,
-    modelver: str = "Geocentric 2.1",
+    modelver: str = "Geocentric",
     overwrite_output_dir: bool = False,
-    metrics_every: int = 10,
-    save_every: int = 100,
+    log_every: int = 20,
+    eval_every: int = 500,
+    save_every: int = 1000,
     num_workers: Optional[int] = None,
     compile_mode: str = "auto",
+    resume: bool = True,
+    force_reprepare: bool = False,
 ) -> None:
     out = Path(output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    if overwrite_output_dir:
-        removed = []
-        for pattern in ("*_pretrained.pt", "*_pretrained_best.pt", "model.pt"):
-            for old_ckpt in out.glob(pattern):
-                try:
-                    old_ckpt.unlink()
-                    removed.append(old_ckpt.name)
-                except OSError:
-                    pass
-        if removed:
-            print("Overwrite requested. Removed old pretraining checkpoint(s): " + ", ".join(sorted(removed)))
-
-    device = select_device(prefer_mps=True)
+    device = select_device()
     dtype = resolve_dtype(device, dtype_name)
-
-    # float16 on MPS is slower and less stable than bfloat16 — MPS hardware is
-    # optimized for bfloat16 and Apple's own ML frameworks never use float16 for training.
-    if device.type == "mps" and dtype == torch.float16:
-        print("INFO: Upgrading float16 → bfloat16 on MPS (faster and more stable on Apple Silicon).")
-        dtype = torch.bfloat16
-
+    enable_fast_math()
     runtime_check(device, dtype)
 
-    if device.type == "cuda" and not gradient_checkpointing:
-        props = torch.cuda.get_device_properties(device)
-        if props.total_memory < 8 * 1024**3 and n_layer >= 12 and batch_size >= 2 and block_size >= 512:
-            print("WARNING: Low GPU memory detected. Enabling gradient checkpointing for safer pretraining.")
-            gradient_checkpointing = True
+    if overwrite_output_dir:
+        for pattern in ("*_pretrained*.pt", "model.pt"):
+            for old in out.glob(pattern):
+                old.unlink(missing_ok=True)
+        print("Overwrite requested: removed existing pretraining checkpoints.")
 
+    # ---- tokenizer -------------------------------------------------------
     tok_out = out / "tokenizer.json"
     if tokenizer_path:
+        import shutil
+
         shutil.copyfile(tokenizer_path, tok_out)
         tokenizer = load_tokenizer(tok_out)
     elif tok_out.exists():
         tokenizer = load_tokenizer(tok_out)
     else:
-        print("Training Byte-level BPE tokenizer from scratch...")
-        tokenizer = train_byte_bpe_tokenizer(iter_texts(data_path), tok_out, vocab_size=vocab_size)
+        print(f"Training byte-level BPE tokenizer (vocab {vocab_size:,}) from scratch...")
+        tokenizer = train_byte_bpe_tokenizer(iter_documents(data_path, doc_sep), tok_out, vocab_size=vocab_size)
 
-    pad_id = token_id(tokenizer, "<pad>")
-    dataset = CausalTextDataset(tokenizer, iter_texts(data_path), block_size=block_size)
-    eval_len = max(1, int(len(dataset) * eval_ratio)) if len(dataset) > 20 else 1
-    train_len = max(1, len(dataset) - eval_len)
-    train_ds, eval_ds = random_split(dataset, [train_len, eval_len], generator=torch.Generator().manual_seed(42))
+    # ---- corpus ----------------------------------------------------------
+    corpus_dir = out / "corpus"
+    train_bin, train_meta = corpus_paths(corpus_dir, "train")
+    val_bin, val_meta = corpus_paths(corpus_dir, "val")
+    if force_reprepare or not train_bin.exists():
+        print("Tokenizing corpus to a binary token stream (one-time cost, reused on later runs)...")
+        prepare_corpus(tokenizer, data_path, corpus_dir, val_fraction=val_fraction, doc_sep=doc_sep)
 
+    meta = json.loads(train_meta.read_text(encoding="utf-8"))
+    train_ds = PackedDataset(train_bin, block_size=block_size, dtype=meta["dtype"])
+    eval_ds = (
+        PackedDataset(val_bin, block_size=block_size, dtype=meta["dtype"])
+        if val_bin.exists() and val_bin.stat().st_size > block_size * 4
+        else None
+    )
+
+    # ---- model -----------------------------------------------------------
     config = GPTConfig(
         vocab_size=tokenizer.get_vocab_size(),
         block_size=block_size,
         n_layer=n_layer,
         n_head=n_head,
+        n_kv_head=n_kv_head,
         n_embd=n_embd,
         dropout=dropout,
         gradient_checkpointing=gradient_checkpointing,
         model_name=modelver,
     )
-    pretrained_name = pretrained_checkpoint_name(modelver)
-    pretrained_best_name = pretrained_checkpoint_name(modelver, best=True)
-    pretrained_path = out / pretrained_name
-    if pretrained_path.exists():
-        print(f"Resuming pretraining from existing checkpoint: {pretrained_path}")
-        model = load_checkpoint(out, device=device, dtype=dtype, checkpoint_name=pretrained_name, modelver=modelver, kind="pretrained")
+
+    ckpt_name = pretrained_checkpoint_name(modelver)
+    best_name = pretrained_checkpoint_name(modelver, best=True)
+    start_step = 0
+    if resume and (out / ckpt_name).exists():
+        model = load_checkpoint(out, device=device, dtype=torch.float32, checkpoint_name=ckpt_name)
+        config = model.config
     else:
-        print("No existing pretraining checkpoint found. Initializing model with random weights.")
-        if dtype == torch.float16:
-            model = GeocentricGPT(config).to(device=device)
-        else:
-            model = GeocentricGPT(config).to(device=device, dtype=dtype)
-    print(f"Model parameters: {count_parameters(model):,}")
+        print("Initializing model from random weights.")
+        model = GeocentricGPT(config).to(device)
+
+    # Master weights stay float32; autocast handles the low-precision compute. Casting
+    # the parameters themselves to bf16 discards mantissa bits on every update and is
+    # a large part of why small from-scratch models plateau early.
+    model = model.to(device=device, dtype=torch.float32)
+
+    n_params = model.num_params()
+    budget = recommended_tokens(n_params)
+    total_corpus_tokens = meta["tokens"]
+    print(f"Model parameters: {n_params:,}")
+    print(f"Corpus: {total_corpus_tokens:,} training tokens across {len(train_ds):,} windows of {block_size}")
+    print(f"Compute-optimal budget for this size is about {budget:,} tokens ({budget / 1e9:.1f}B).")
+    if total_corpus_tokens * max(1, epochs) < budget * 0.5:
+        seen = total_corpus_tokens * max(1, epochs)
+        print(
+            f"WARNING: this run will see ~{seen:,} tokens, {budget / max(1, seen):.1f}x below the "
+            f"compute-optimal budget. Expect fluent but shallow, off-topic output. Add more data "
+            f"or raise --epochs before blaming the architecture."
+        )
+
+    # ---- data loading ----------------------------------------------------
+    if num_workers is None:
+        num_workers = max(2, min(8, (os.cpu_count() or 2) - 1)) if device.type == "cuda" else 0
+    loader_kwargs = dict(
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=(device.type == "cuda"),
+        drop_last=True,
+        persistent_workers=num_workers > 0,
+    )
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = 4
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    # drop_last stays off for eval: a small validation split can hold fewer windows
+    # than one batch, and dropping it made evaluate() silently report a loss of 0.
+    eval_kwargs = {**loader_kwargs, "drop_last": False}
+    eval_loader = DataLoader(eval_ds, shuffle=False, **eval_kwargs) if eval_ds else None
+
+    steps_per_epoch = max(1, len(train_loader) // gradient_accumulation_steps)
+    total_steps = max_steps if max_steps > 0 else steps_per_epoch * max(1, epochs)
+    warmup_steps = max(10, int(total_steps * warmup_ratio))
+
+    optimizer = build_optimizer(model, learning_rate, weight_decay, device_type=device.type)
+    if resume and (out / ckpt_name).exists():
+        start_step = load_optimizer_state(out, ckpt_name, optimizer)
+        if start_step:
+            print(f"Resuming at step {start_step:,} of {total_steps:,}.")
+
+    active_model, compiled = maybe_compile(model, device, compile_mode)
+    use_scaler = device.type == "cuda" and dtype == torch.float16
+    scaler = torch.amp.GradScaler(enabled=use_scaler)
+    autocast = (
+        torch.amp.autocast(device_type=device.type, dtype=dtype)
+        if device.type in {"cuda", "mps"} and dtype != torch.float32
+        else torch.amp.autocast(device_type=device.type, enabled=False)
+    )
+
+    tokens_per_step = batch_size * gradient_accumulation_steps * block_size
+    print(
+        f"Schedule: {total_steps:,} optimizer steps x {tokens_per_step:,} tokens/step "
+        f"= {total_steps * tokens_per_step:,} tokens | warmup {warmup_steps:,} steps"
+    )
 
     initialize_training_metrics(
         out,
         phase="pretraining",
         config={
-            "vocab_size": tokenizer.get_vocab_size(),
-            "block_size": block_size,
-            "n_layer": n_layer,
-            "n_head": n_head,
-            "n_embd": n_embd,
-            "dropout": dropout,
-            "epochs": epochs,
-            "batch_size": batch_size,
+            "vocab_size": config.vocab_size, "block_size": block_size, "n_layer": config.n_layer,
+            "n_head": config.n_head, "n_kv_head": config.n_kv_head, "n_embd": config.n_embd,
+            "params": n_params, "batch_size": batch_size,
             "gradient_accumulation_steps": gradient_accumulation_steps,
-            "learning_rate": learning_rate,
-            "eval_ratio": eval_ratio,
-            "dtype": str(dtype),
-            "gradient_checkpointing": gradient_checkpointing,
-            "modelver": modelver,
-            "overwrite_output_dir": overwrite_output_dir,
-            "metrics_every": metrics_every,
-            "save_every": save_every,
-            "num_workers": num_workers,
-            "compile_mode": compile_mode,
+            "learning_rate": learning_rate, "total_steps": total_steps,
+            "tokens_per_step": tokens_per_step, "dtype": str(dtype), "compiled": compiled,
+            "corpus_tokens": total_corpus_tokens, "recommended_tokens": budget,
         },
     )
 
-    if device.type in {"mps", "cuda"} and dtype in {torch.float16, torch.bfloat16}:
-        import contextlib
-        autocast_ctx = torch.amp.autocast(device_type=device.type, dtype=dtype)
-    else:
-        import contextlib
-        autocast_ctx = contextlib.nullcontext()
+    meter = Throughput(n_params, block_size, device, dtype)
+    step = start_step
+    best_eval = float("inf")
+    running_loss = 0.0
+    micro_count = 0
+    optimizer.zero_grad(set_to_none=True)
 
-    # MPS (Apple Silicon) performs significantly worse with multiprocessing DataLoader workers
-    # due to IPC overhead and MPS context conflicts. num_workers=0 uses the main process
-    # and is substantially faster on Mac. CUDA benefits from workers; CPU is indifferent.
-    if num_workers is None:
-        if device.type == "mps":
-            num_workers = 0
-        elif device.type == "cuda":
-            num_workers = max(2, min(8, (os.cpu_count() or 1) - 1))
-        else:
-            num_workers = max(0, min(4, (os.cpu_count() or 1) - 1))
-    else:
-        num_workers = max(0, int(num_workers))
-    pin_memory = device.type == "cuda"
-    # prefetch_factor is only valid when num_workers > 0
-    prefetch_factor = 2 if num_workers > 0 else None
-
-    # Initialize the picklable collation wrapper
-    collate_wrapper = PadCollateWrapper(pad_id)
-
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=collate_wrapper,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=(num_workers > 0),
-    )
-    eval_loader = DataLoader(
-        eval_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=collate_wrapper,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=(num_workers > 0),
-    )
-
-    use_cpu_offload = False
-    if device.type == "cuda":
-        props = torch.cuda.get_device_properties(device)
-        if props.total_memory < 10 * 1024**3 and dtype in {torch.float16, torch.bfloat16}:
-            use_cpu_offload = True
-            print("WARNING: GPU memory is limited. Offloading optimizer state to CPU.")
-
-    optim = CPUAdamW(
-        model.parameters(),
-        lr=learning_rate,
-        betas=(0.9, 0.95),
-        weight_decay=0.1,
-        offload_state_to_cpu=use_cpu_offload,
-    )
-    compiled_model = None
-    if compile_mode != "off" and hasattr(torch, "compile") and device.type == "cuda":
-        try:
-            props = torch.cuda.get_device_properties(device)
-            if props.major >= 8:
-                compiled_model = torch.compile(model, mode="reduce-overhead")
-                print("Compiled model with torch.compile for faster training.")
-            else:
-                print("Skipping torch.compile on compute capability < 8 for stability.")
-        except Exception as e:
-            print(f"torch.compile failed; continuing without compilation: {e}")
-
-    total_steps = max(1, math.ceil(len(train_loader) / gradient_accumulation_steps) * epochs)
-    step = 0
-    optim.zero_grad(set_to_none=True)
-    use_scaler = device.type == "cuda" and dtype == torch.float16
-    scaler = torch.amp.GradScaler(enabled=use_scaler)
-    # Cosine LR schedule: warms up for 2% of steps then decays to 10% of peak LR.
-    # This is meaningfully better than flat LR for both loss and final model quality.
-    warmup_steps = max(1, int(total_steps * 0.02))
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optim,
-        max_lr=learning_rate,
-        total_steps=total_steps,
-        pct_start=warmup_steps / total_steps,
-        anneal_strategy="cos",
-        div_factor=10.0,
-        final_div_factor=10.0,
-    )
-    epoch = 0
-    best_eval_loss = float("inf")
-    epochs_no_improve = 0
-    active_model = compiled_model if compiled_model is not None else model
     try:
-        while True:
-            epoch += 1
-            if epochs > 0 and epoch > epochs:
-                break
-                
-            if epochs == 0 and epoch == 1:
-                print("\n" + "=" * 80)
-                print("INFINITE TRAINING MODE ACTIVE")
-                print("The model will train continuously. Press Ctrl+C at any time to halt and save!")
-                print("=" * 80 + "\n")
+        pbar = tqdm(total=total_steps, initial=step, desc="pretrain", dynamic_ncols=True)
+        done = False
+        while not done:
+            for batch in train_loader:
+                input_ids = batch["input_ids"].to(device, non_blocking=True)
+                labels = batch["labels"].to(device, non_blocking=True)
 
-            model.train()
-            pbar = tqdm(train_loader, desc=f"Pretrain epoch {epoch if epochs == 0 else f'{epoch}/{epochs}'}")
-            running = torch.tensor(0.0, device=device)
-            seen = 0
-            for micro, batch in enumerate(pbar, start=1):
-                input_ids = batch["input_ids"].to(device, non_blocking=(device.type == "cuda"))
-                labels = batch["labels"].to(device, non_blocking=(device.type == "cuda"))
-                try:
-                    with autocast_ctx:
-                        _, loss = active_model(input_ids, labels=labels)
-                except Exception as exc:
-                    if compiled_model is not None:
-                        print(f"Compiled model failed during forward pass: {exc}. Falling back to uncompiled model.")
-                        compiled_model = None
-                        active_model = model
-                        with autocast_ctx:
-                            _, loss = active_model(input_ids, labels=labels)
-                    else:
-                        raise
-                if loss is None:
-                    raise RuntimeError("Loss was not computed")
+                with autocast:
+                    _, loss = active_model(input_ids, labels=labels)
                 if not torch.isfinite(loss):
-                    print(f"WARNING: Non-finite loss detected at step {step+1}, skipping batch.")
-                    optim.zero_grad(set_to_none=True)
+                    print(f"WARNING: non-finite loss at step {step}; skipping microbatch.")
+                    optimizer.zero_grad(set_to_none=True)
+                    micro_count = 0
                     continue
 
+                scaled = loss / gradient_accumulation_steps
                 if use_scaler:
-                    scaler.scale(loss / gradient_accumulation_steps).backward()
+                    scaler.scale(scaled).backward()
                 else:
-                    (loss / gradient_accumulation_steps).backward()
-                # Accumulate on GPU — avoid .cpu() transfer every microstep
-                running += loss.detach()
-                seen += 1
+                    scaled.backward()
 
-                if micro % gradient_accumulation_steps == 0 or micro == len(train_loader):
+                running_loss += float(loss.detach())
+                micro_count += 1
+                meter.add(input_ids.numel())
+
+                if micro_count < gradient_accumulation_steps:
+                    continue
+
+                lr = lr_at_step(step, total_steps, learning_rate, warmup_steps, min_lr_ratio)
+                set_lr(optimizer, lr)
+                if use_scaler:
+                    scaler.unscale_(optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                if torch.isfinite(grad_norm):
                     if use_scaler:
-                        try:
-                            scaler.unscale_(optim)
-                        except ValueError as exc:
-                            if "Attempting to unscale FP16 gradients" not in str(exc):
-                                raise
-                    # clip_grad_norm_ returns the total norm; if it's finite the grads are
-                    # fine. Checking torch.isfinite on every parameter tensor every step
-                    # forces a GPU→CPU sync per param — replaced with a single norm check.
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    if not torch.isfinite(grad_norm):
-                        print(f"WARNING: Non-finite gradients detected at step {step+1}; skipping optimizer step.")
-                        optim.zero_grad(set_to_none=True)
-                        if use_scaler:
-                            scaler.update()
-                        continue
-                    if use_scaler:
-                        scaler.step(optim)
+                        scaler.step(optimizer)
                         scaler.update()
                     else:
-                        optim.step()
-                    if step < total_steps:
-                        scheduler.step()
-                    optim.zero_grad(set_to_none=True)
-                    step += 1
-                    # Only write metrics to disk every 10 steps — each write is a full
-                    # JSON read+parse+rewrite and forces a CPU sync. Every-step writes
-                    # were adding multiple seconds of overhead per iteration on MPS.
-                    if metrics_every > 0 and step % metrics_every == 0:
-                        avg_loss = float((running / max(1, seen)).cpu())
-                        update_training_metrics(
-                            out,
-                            {
-                                "step": step,
-                                "epoch": epoch,
-                                "batch": micro,
-                                "loss": avg_loss,
-                                "perplexity": float(math.exp(min(avg_loss, 20))),
-                                "message": "Batch complete.",
-                            },
-                        )
-                        pbar.set_postfix(loss=f"{avg_loss:.4f}", ppl=f"{math.exp(min(avg_loss, 20)):.2f}", step=step)
-                        running = torch.tensor(0.0, device=device)
-                        seen = 0
-                    if save_every > 0 and step % save_every == 0:
-                        save_checkpoint(model, out, step, name=pretrained_name)
+                        optimizer.step()
+                else:
+                    print(f"WARNING: non-finite gradients at step {step}; step skipped.")
+                    if use_scaler:
+                        scaler.update()
 
-            eval_loss = evaluate(active_model, eval_loader, device, dtype)
-            print(f"Eval loss: {eval_loss:.4f} | perplexity: {math.exp(min(eval_loss, 20)):.2f}")
-            update_training_metrics(
-                out,
-                {
-                    "eval_loss": float(eval_loss),
-                    "best_eval_loss": float(best_eval_loss),
-                    "message": "Epoch evaluation complete.",
-                },
-            )
-            
-            # Save latest checkpoint
-            save_checkpoint(model, out, step, name=pretrained_name)
-            
-            # Track best eval loss and check patience
-            if eval_loss < best_eval_loss:
-                best_eval_loss = eval_loss
-                epochs_no_improve = 0
-                save_checkpoint(model, out, step, name=pretrained_best_name)
-                print(f" New best evaluation loss: {best_eval_loss:.4f}! Best checkpoint saved.")
-            else:
-                epochs_no_improve += 1
-                print(f" No improvement in evaluation loss for {epochs_no_improve} epoch(s).")
-                
-            if patience > 0 and epochs_no_improve >= patience:
-                print(f"\n[Early Stopping] Eval loss has not improved for {patience} epochs. Stopping pretraining.")
-                best_path = out / pretrained_best_name
-                std_path = out / pretrained_name
-                if best_path.exists():
-                    shutil.copyfile(best_path, std_path)
-                update_training_metrics(out, {"status": "stopped", "message": "Early stopping reached."})
-                break
-                
-            if target_loss > 0.0 and eval_loss <= target_loss:
-                print(f"\n[Early Stopping] Target validation loss of {target_loss:.4f} reached. Stopping pretraining.")
-                best_path = out / pretrained_best_name
-                std_path = out / pretrained_name
-                if best_path.exists():
-                    shutil.copyfile(best_path, std_path)
-                update_training_metrics(out, {"status": "stopped", "message": "Target loss reached."})
-                break
+                optimizer.zero_grad(set_to_none=True)
+                step += 1
+                avg_loss = running_loss / max(1, micro_count)
+                running_loss = 0.0
+                micro_count = 0
+                pbar.update(1)
+
+                if step % log_every == 0:
+                    tps, mfu = meter.read()
+                    pbar.set_description(format_progress(step, total_steps, avg_loss, lr, tps, mfu))
+                    update_training_metrics(out, {
+                        "step": step, "loss": avg_loss, "lr": lr,
+                        "perplexity": math.exp(min(avg_loss, 20)),
+                        "tokens_per_second": tps, "mfu": mfu,
+                        "tokens_seen": step * tokens_per_step,
+                        "peak_memory_gb": peak_memory_gb(device),
+                        "message": "Training.",
+                    })
+                    meter.reset()
+
+                if eval_loader is not None and eval_every > 0 and step % eval_every == 0:
+                    eval_loss = evaluate(active_model, eval_loader, device, autocast)
+                    if eval_loss is None:
+                        print("\n  eval skipped: validation split holds no complete window.")
+                    else:
+                        print(f"\n  eval loss {eval_loss:.4f} | ppl {math.exp(min(eval_loss, 20)):.2f}")
+                        update_training_metrics(out, {"eval_loss": eval_loss, "message": "Evaluated."})
+                        if eval_loss < best_eval:
+                            best_eval = eval_loss
+                            save_checkpoint(model, out, step, name=best_name, optimizer=optimizer)
+                    meter.reset()
+
+                if save_every > 0 and step % save_every == 0:
+                    save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
+                    meter.reset()
+
+                if step >= total_steps:
+                    done = True
+                    break
+        pbar.close()
     except KeyboardInterrupt:
-        print("\n[Ctrl+C] Pretraining interrupted by user! Saving current checkpoint...")
-        save_checkpoint(model, out, step, name=pretrained_name)
+        print("\n[Ctrl+C] Saving checkpoint before exit...")
+        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
         update_training_metrics(out, {"status": "stopped", "message": "Interrupted by user."})
-        print("Checkpoint successfully saved. Exiting gracefully.")
+        print("Saved. Rerun the same command to resume from this step.")
         return
+    finally:
+        cleanup(device)
 
-
-
-    print(f"Pretraining complete. Saved to {out}")
-    update_training_metrics(out, {"status": "stopped", "message": "Pretraining complete."})
+    save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
+    update_training_metrics(out, {"status": "complete", "message": "Pretraining complete."})
+    print(f"Pretraining complete after {step:,} steps ({step * tokens_per_step:,} tokens). Saved to {out}")
 
 
 @torch.no_grad()
-def evaluate(model: GeocentricGPT, loader: DataLoader, device: torch.device, dtype: torch.dtype) -> float:
+def evaluate(model, loader: DataLoader, device: torch.device, autocast, max_batches: int = 50) -> Optional[float]:
     model.eval()
     total = 0.0
     count = 0
-    if device.type in {"mps", "cuda"} and dtype in {torch.float16, torch.bfloat16}:
-        autocast_ctx = torch.amp.autocast(device_type=device.type, dtype=dtype)
-    else:
-        import contextlib
-        autocast_ctx = contextlib.nullcontext()
-
-    for batch in loader:
-        input_ids = batch["input_ids"].to(device, non_blocking=(device.type == "cuda"))
-        labels = batch["labels"].to(device, non_blocking=(device.type == "cuda"))
-        with autocast_ctx:
+    for i, batch in enumerate(loader):
+        if i >= max_batches:
+            break
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        labels = batch["labels"].to(device, non_blocking=True)
+        with autocast:
             _, loss = model(input_ids, labels=labels)
         if loss is not None:
-            total += float(loss.detach().cpu())
+            total += float(loss.detach())
             count += 1
     model.train()
-    return total / max(1, count)
+    return (total / count) if count else None
