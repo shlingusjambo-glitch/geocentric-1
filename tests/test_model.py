@@ -97,3 +97,35 @@ def test_mismatched_head_counts_are_rejected():
         GPTConfig(vocab_size=100, n_embd=64, n_head=5)
     with pytest.raises(ValueError):
         GPTConfig(vocab_size=100, n_embd=64, n_head=4, n_kv_head=3)
+
+
+def test_checkpoint_records_and_reports_its_stage(tmp_path):
+    """chat picks its mode from this, so a wrong answer means the wrong prompt format."""
+    from geocentric.checkpoint import checkpoint_stage, save_checkpoint
+
+    model = build()
+    save_checkpoint(model, tmp_path, step=1, name="m_pretrained.pt", extra={"stage": "pretrained"})
+    assert checkpoint_stage(tmp_path) == "pretrained"
+
+    save_checkpoint(model, tmp_path, step=2, name="m_sft.pt", extra={"stage": "sft"})
+    # An SFT checkpoint outranks a pretrained one in the same directory.
+    assert checkpoint_stage(tmp_path) == "sft"
+
+
+def test_stage_falls_back_to_the_filename(tmp_path):
+    """Checkpoints written before the stage field must still be classified."""
+    import torch
+
+    from geocentric.checkpoint import checkpoint_stage
+
+    model = build()
+    torch.save({"model": model.state_dict(), "config": vars(model.config), "step": 1},
+               tmp_path / "legacy_sft.pt")
+    assert checkpoint_stage(tmp_path) == "sft"
+
+
+def test_missing_checkpoint_defaults_to_base_mode(tmp_path):
+    """Guessing 'sft' for an absent checkpoint would apply a chat template blindly."""
+    from geocentric.checkpoint import checkpoint_stage
+
+    assert checkpoint_stage(tmp_path) == "pretrained"

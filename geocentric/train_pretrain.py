@@ -314,11 +314,11 @@ def pretrain(
                         update_training_metrics(out, {"eval_loss": eval_loss, "message": "Evaluated."})
                         if eval_loss < best_eval:
                             best_eval = eval_loss
-                            save_checkpoint(model, out, step, name=best_name, optimizer=optimizer)
+                            save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"stage": "pretrained"})
                     meter.reset()
 
                 if save_every > 0 and step % save_every == 0:
-                    save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
+                    save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"stage": "pretrained"})
                     meter.reset()
 
                 if step >= total_steps:
@@ -327,7 +327,7 @@ def pretrain(
         pbar.close()
     except KeyboardInterrupt:
         print("\n[Ctrl+C] Saving checkpoint before exit...")
-        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
+        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"stage": "pretrained"})
         update_training_metrics(out, {"status": "stopped", "message": "Interrupted by user."})
         print("Saved. Rerun the same command to resume from this step.")
         return
@@ -335,7 +335,7 @@ def pretrain(
         cleanup(device)
         pid_file.unlink(missing_ok=True)
 
-    save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
+    save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"stage": "pretrained"})
     update_training_metrics(out, {"status": "complete", "message": "Pretraining complete."})
     print(f"Pretraining complete after {step:,} steps ({step * tokens_per_step:,} tokens). Saved to {out}")
 

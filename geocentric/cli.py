@@ -99,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--doc_sep", default=None)
     _add_common_training_flags(pl)
 
-    ch = sub.add_parser("chat", help="Chat with a trained checkpoint")
+    ch = sub.add_parser("chat", aliases=["try"], help="Test a checkpoint interactively")
     ch.add_argument("--model_dir", default="runs/geocentric")
     ch.add_argument("--max_new_tokens", type=int, default=256)
     ch.add_argument("--temperature", type=float, default=0.8)
@@ -108,13 +108,16 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("--min_p", type=float, default=0.05)
     ch.add_argument("--repetition_penalty", type=float, default=1.1)
     ch.add_argument("--system", default=None)
+    ch.add_argument("--mode", default="auto", choices=["auto", "chat", "base"],
+                    help="auto picks chat for an instruction-tuned checkpoint and raw "
+                         "continuation for a pretrained-only one")
 
     gen = sub.add_parser("generate", help="Generate a single completion and exit")
     gen.add_argument("--model_dir", default="runs/geocentric")
     gen.add_argument("--prompt", required=True)
     gen.add_argument("--max_new_tokens", type=int, default=256)
     gen.add_argument("--temperature", type=float, default=0.8)
-    gen.add_argument("--raw", action="store_true", help="Skip the chat template (base-model completion)")
+    gen.add_argument("--raw", action="store_true", help="Force raw completion, no chat template")
 
     pc = sub.add_parser("plan", help="Show the architecture and token budget for a parameter target")
     pc.add_argument("--preset", default="120m")
@@ -253,56 +256,94 @@ def _run_pipeline(args: argparse.Namespace) -> None:
 
 
 def _run_chat(args: argparse.Namespace) -> None:
+    """Interactive test harness that adapts to what the checkpoint actually is.
+
+    A pretrained-only checkpoint has never seen a chat template or a system
+    prompt. Feeding it one produces role tags it has no idea how to close, which
+    reads as the model being broken when it is simply being asked the wrong kind
+    of question. So a base model is driven as a text continuer and only an
+    instruction-tuned one gets the chat framing.
+    """
     from geocentric.chat import DEFAULT_SYSTEM
     from geocentric.checkpoint import load_model_and_tokenizer
     from geocentric.generate import build_chat_prompt, stream_text
 
-    model, tokenizer = load_model_and_tokenizer(args.model_dir)
+    model, tokenizer, stage = load_model_and_tokenizer(args.model_dir, with_stage=True)
+    mode = args.mode if args.mode != "auto" else ("chat" if stage == "sft" else "base")
+
     print(BANNER)
     print(f"{model.config.model_name} | {model.num_params():,} params | ctx {model.config.block_size}")
-    print("Type /reset to clear history, /exit to quit.\n")
+    print(f"checkpoint: {stage}  ->  {mode} mode")
+    print()
+    if mode == "base":
+        print("  Base model: no instruction tuning yet, so there is no system prompt and")
+        print("  no chat roles. Type the start of a passage and it continues the text.")
+        print("  Try:  The capital of France is")
+    else:
+        print("  Instruction-tuned: answers turns and stops at the end of its own.")
+    print("  /reset clears history, /system <text> sets the system prompt, /exit quits.\n")
 
     system = args.system or DEFAULT_SYSTEM
     history: list[dict[str, str]] = []
+    sampling = dict(
+        max_new_tokens=args.max_new_tokens, temperature=args.temperature,
+        top_k=args.top_k, top_p=args.top_p, min_p=args.min_p,
+        repetition_penalty=args.repetition_penalty,
+    )
+
+    prompt_label = "text > " if mode == "base" else "you  > "
+    reply_label = "cont > " if mode == "base" else "bot  > "
 
     while True:
         try:
-            user = input("you > ").strip()
+            line = input(prompt_label).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
-        if not user:
+        if not line:
             continue
-        if user in {"/exit", "/quit"}:
+        if line in {"/exit", "/quit"}:
             break
-        if user == "/reset":
+        if line == "/reset":
             history = []
             print("History cleared.\n")
             continue
+        if line.startswith("/system "):
+            system = line[len("/system "):].strip()
+            history = []
+            print(f"System prompt set; history cleared.\n" if mode == "chat"
+                  else "Base models ignore the system prompt.\n")
+            continue
 
-        history.append({"role": "user", "content": user})
-        prompt = build_chat_prompt(history, system=system)
-        print("bot > ", end="", flush=True)
+        if mode == "chat":
+            history.append({"role": "user", "content": line})
+            prompt = build_chat_prompt(history, system=system)
+        else:
+            # Feed the raw text back so the model continues rather than answers.
+            prompt = line
+
+        print(reply_label, end="", flush=True)
         chunks: list[str] = []
-        for piece in stream_text(
-            model, tokenizer, prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_k=args.top_k, top_p=args.top_p, min_p=args.min_p,
-            repetition_penalty=args.repetition_penalty,
-        ):
-            chunks.append(piece)
-            print(piece, end="", flush=True)
+        try:
+            for piece in stream_text(model, tokenizer, prompt, **sampling):
+                chunks.append(piece)
+                print(piece, end="", flush=True)
+        except KeyboardInterrupt:
+            print("  [interrupted]", end="")
         print("\n")
-        history.append({"role": "assistant", "content": "".join(chunks).strip()})
+
+        if mode == "chat":
+            history.append({"role": "assistant", "content": "".join(chunks).strip()})
 
 
 def _run_generate(args: argparse.Namespace) -> None:
     from geocentric.checkpoint import load_model_and_tokenizer
     from geocentric.generate import build_chat_prompt, generate_text
 
-    model, tokenizer = load_model_and_tokenizer(args.model_dir)
-    prompt = args.prompt if args.raw else build_chat_prompt([{"role": "user", "content": args.prompt}])
+    model, tokenizer, stage = load_model_and_tokenizer(args.model_dir, with_stage=True)
+    # Same reasoning as chat: only an instruction-tuned checkpoint gets the template.
+    use_raw = args.raw or stage != "sft"
+    prompt = args.prompt if use_raw else build_chat_prompt([{"role": "user", "content": args.prompt}])
     print(generate_text(
         model, tokenizer, prompt,
         max_new_tokens=args.max_new_tokens,
@@ -381,7 +422,7 @@ def main() -> None:
         _run_sft(args)
     elif args.command == "pipeline":
         _run_pipeline(args)
-    elif args.command == "chat":
+    elif args.command in ("chat", "try"):
         _run_chat(args)
     elif args.command == "generate":
         _run_generate(args)

@@ -208,21 +208,21 @@ def sft(
                 update_training_metrics(out, {"eval_loss": eval_loss, "message": f"Epoch {epoch} evaluated."})
                 if eval_loss < best_eval:
                     best_eval = eval_loss
-                    save_checkpoint(model, out, step, name=best_name, optimizer=optimizer)
+                    save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"stage": "sft"})
                     print("  new best SFT checkpoint saved.")
                 meter.reset()
-            save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
+            save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"stage": "sft"})
         pbar.close()
     except KeyboardInterrupt:
         print("\n[Ctrl+C] Saving SFT checkpoint before exit...")
-        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer)
+        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"stage": "sft"})
         update_training_metrics(out, {"status": "stopped", "message": "Interrupted by user."})
         return
     finally:
         cleanup(device)
 
     if not (out / best_name).exists():
-        save_checkpoint(model, out, step, name=best_name, optimizer=optimizer)
+        save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"stage": "sft"})
     update_training_metrics(out, {"status": "complete", "message": "SFT complete."})
     print(f"SFT complete after {step:,} steps. Saved to {out}")
 

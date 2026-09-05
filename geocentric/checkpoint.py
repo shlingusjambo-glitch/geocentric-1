@@ -68,6 +68,26 @@ def _find_checkpoint(model_dir: Path, checkpoint_name: Optional[str]) -> Path:
     raise FileNotFoundError(f"No checkpoint (.pt) found in {model_dir}")
 
 
+def checkpoint_stage(model_dir: str | Path, checkpoint_name: Optional[str] = None) -> str:
+    """Return "sft" or "pretrained" for the checkpoint that would be loaded.
+
+    Prefers the stage recorded inside the checkpoint; falls back to the filename
+    for checkpoints written before that field existed.
+    """
+    try:
+        path = _find_checkpoint(Path(model_dir), checkpoint_name)
+    except FileNotFoundError:
+        return "pretrained"
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        stage = payload.get("stage")
+        if stage in {"sft", "pretrained"}:
+            return stage
+    except Exception:
+        pass
+    return "sft" if "_sft" in path.name else "pretrained"
+
+
 def load_checkpoint(
     model_dir: str | Path,
     device: torch.device,
@@ -126,11 +146,14 @@ def load_model_and_tokenizer(
     device: Optional[torch.device] = None,
     dtype: torch.dtype = torch.float32,
     checkpoint_name: Optional[str] = None,
-) -> Tuple[GeocentricGPT, Any]:
+    with_stage: bool = False,
+):
     from geocentric.device import select_device
 
     device = device or select_device()
     model = load_checkpoint(model_dir, device=device, dtype=dtype, checkpoint_name=checkpoint_name)
     tokenizer = load_tokenizer(find_tokenizer_path(model_dir))
     model.eval()
+    if with_stage:
+        return model, tokenizer, checkpoint_stage(model_dir, checkpoint_name)
     return model, tokenizer

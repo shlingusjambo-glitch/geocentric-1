@@ -42,7 +42,7 @@ Context length defaults to 1024 tokens (2048 at 1B+), and the vocabulary to 32,0
 | `pretrain` | Train from random initialization |
 | `sft` | Instruction fine-tune a pretrained checkpoint |
 | `pipeline` | `pretrain` then `sft` in one command |
-| `chat` | Interactive chat with streaming output |
+| `chat` (alias `try`) | Test a checkpoint interactively |
 | `generate` | One-shot completion |
 | `list-models` | Show local checkpoints |
 
@@ -91,6 +91,24 @@ geocentric sft --model_dir runs/geocentric --sft_data_path data/alpaca_data.json
 Accepts `{"instruction", "input", "output"}`, `{"messages": [...]}`, and ShareGPT
 `{"conversations": [...]}`. Multi-turn conversations are supported and only the
 assistant's turns contribute to the loss.
+
+## Testing a checkpoint
+
+```bash
+geocentric try --model_dir runs/geocentric-120m
+```
+
+The mode follows the checkpoint, because the two kinds of model want different
+input:
+
+- **pretrained only** — raw continuation. No system prompt, no roles. You type the
+  start of a passage and it continues. A base model has never seen a chat template,
+  so feeding it one produces role tags it cannot close, which looks like a broken
+  model rather than the wrong question.
+- **instruction tuned** — chat turns with a system prompt, stopping at `<|eot|>`.
+
+Force either with `--mode base` / `--mode chat`. In-session commands: `/reset`,
+`/system <text>`, `/exit`.
 
 ## Data formats
 
