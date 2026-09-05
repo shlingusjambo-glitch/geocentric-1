@@ -149,6 +149,40 @@ were truncated, stripping their stop token and teaching the model never to finis
 and validation windows were drawn randomly from training documents, so eval loss
 was optimistic.
 
+## Proving the changes helped
+
+The rewrite is justified by diagnosed bugs and established results, but neither is
+evidence about *your* model. `scripts/ab_compare.py` measures it directly: it checks
+the 2.1 pipeline out of git history into a worktree, trains both versions on the same
+corpus slice, and scores them on the same held-out text.
+
+```bash
+geocentric download-wiki
+python scripts/ab_compare.py --data data/wikitext103 --corpus-mb 200 --preset 50m
+```
+
+Output lands in `runs/ab_compare/REPORT.md` with a metric table and sample
+completions from each arm.
+
+**The headline number is bits per byte, not loss.** The two arms use different
+vocabularies (8,192 vs 32,000), and cross-entropy per token is not comparable across
+tokenizers — a larger vocabulary spreads the same text over fewer, individually
+harder tokens, so it looks worse on per-token loss while being strictly better at
+modeling the text. Normalizing total negative log likelihood by the *bytes* of source
+text removes that dependence. Every scored token is given the same amount of context
+in both arms.
+
+Notes on running it:
+
+- Use `--corpus-mb` to control the workload, not `--max_steps`. The 2.1 trainer has
+  no step cap, so capping steps would train the arms on different amounts of data;
+  the script refuses that combination.
+- The legacy arm needs `psutil`, which the current dependency list drops.
+- The legacy arm's `OneCycleLR` divides by zero on runs of roughly 50–99 optimizer
+  steps. That is a pre-existing 2.1 bug — use a corpus large enough to clear it.
+- Both arms train well under a compute-optimal budget, so neither produces a good
+  model. This measures which pipeline learns more from identical data.
+
 ## Development
 
 ```bash

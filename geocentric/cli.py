@@ -93,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--block_size", type=int, default=None)
     pl.add_argument("--epochs", type=int, default=1)
     pl.add_argument("--sft_epochs", type=int, default=3)
+    pl.add_argument("--sft_learning_rate", type=float, default=None,
+                    help="Fine-tuning rate (default 1e-4). Independent of --learning_rate.")
     pl.add_argument("--max_steps", type=int, default=0)
     pl.add_argument("--doc_sep", default=None)
     _add_common_training_flags(pl)
@@ -148,26 +150,17 @@ def _dims_from_args(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _auto_batch(args: argparse.Namespace, dims: dict[str, Any]) -> tuple[int, int]:
-    """Pick a micro-batch that fits VRAM, keeping the tokens-per-step target intact."""
-    import torch
+    """Return explicit sizes, or zeros meaning 'measure it on the real model'.
 
-    from geocentric.trainer import estimate_batch_size
-
+    A formula cannot predict activation memory reliably enough to trust a multi-day
+    run to it, so unless the user pins a size the trainer probes the actual model
+    on the actual device.
+    """
     if args.batch_size and args.gradient_accumulation_steps:
         return args.batch_size, args.gradient_accumulation_steps
-
-    vram = 0.0
-    if torch.cuda.is_available():
-        vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
-
-    batch = args.batch_size or estimate_batch_size(
-        dims["params"], dims["block_size"], vram, args.gradient_checkpointing
-    )
-    # Aim for roughly half a million tokens per optimizer step, the range small
-    # models train most stably in.
-    target_tokens = 500_000
-    accum = args.gradient_accumulation_steps or max(1, round(target_tokens / (batch * dims["block_size"])))
-    return batch, accum
+    if args.batch_size:
+        return args.batch_size, args.gradient_accumulation_steps or 0
+    return 0, args.gradient_accumulation_steps or 0
 
 
 def _run_pretrain(args: argparse.Namespace) -> None:
@@ -177,6 +170,8 @@ def _run_pretrain(args: argparse.Namespace) -> None:
     batch, accum = _auto_batch(args, dims)
     print(f"Architecture: {dims['n_layer']}L x {dims['n_embd']}d x {dims['n_head']}h "
           f"(kv {dims['n_kv_head']}) ctx {dims['block_size']} ≈ {dims['params']:,} params")
+    if batch == 0:
+        print("Batch size: measuring on device...")
 
     pretrain(
         data_path=args.data_path,
@@ -248,6 +243,12 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     sft_args.epochs = args.sft_epochs
     sft_args.warmup_ratio = 0.03
     sft_args.keep_overlong = False
+    # Pretraining and fine-tuning want different rates — roughly 6e-4 against random
+    # weights, 1e-4 against a trained one. Carrying --learning_rate across would
+    # silently fine-tune at the pretraining rate and wreck the checkpoint.
+    sft_args.learning_rate = args.sft_learning_rate
+    # Accumulation is sized for packed pretraining windows; SFT batches are shorter.
+    sft_args.gradient_accumulation_steps = None
     _run_sft(sft_args)
 
 

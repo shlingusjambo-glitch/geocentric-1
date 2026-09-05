@@ -42,13 +42,10 @@ geocentric2_3/
 *.pt
 secret.key
 users.db
-data/pretrain_seed.txt
-data/alpaca_data.json
-data/*.zip
-data/*.tar.gz
-data/*.jsonl
-data/*.txt
-data/*.json
+# Training data and corpora are large and reproducible from scripts/download_recipe.py
+data/
+logs/
+runs/ab_compare/
 
 # Runtime state / build artifacts / scratch
 .geocentric/

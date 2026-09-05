@@ -24,6 +24,7 @@ from geocentric.tokenizer_train import DEFAULT_VOCAB_SIZE, load_tokenizer, train
 from geocentric.trainer import (
     Throughput,
     build_optimizer,
+    find_batch_size,
     format_progress,
     lr_at_step,
     maybe_compile,
@@ -150,6 +151,22 @@ def pretrain(
             f"compute-optimal budget. Expect fluent but shallow, off-topic output. Add more data "
             f"or raise --epochs before blaming the architecture."
         )
+
+    # ---- batch sizing ----------------------------------------------------
+    if batch_size <= 0:
+        batch_size = find_batch_size(
+            model, block_size, device, dtype,
+            learning_rate=learning_rate, weight_decay=weight_decay,
+        )
+        if gradient_accumulation_steps <= 0:
+            # Aim for roughly half a million tokens per optimizer step, the range
+            # small models train most stably in.
+            gradient_accumulation_steps = max(1, round(500_000 / (batch_size * block_size)))
+            print(
+                f"Gradient accumulation: {gradient_accumulation_steps} "
+                f"({batch_size * gradient_accumulation_steps * block_size:,} tokens per step)"
+            )
+    gradient_accumulation_steps = max(1, gradient_accumulation_steps)
 
     # ---- data loading ----------------------------------------------------
     if num_workers is None:

@@ -26,8 +26,19 @@ def select_device(prefer_cuda: bool = True) -> torch.device:
 
 
 def supports_bf16(device: torch.device) -> bool:
+    """True only where bfloat16 runs on tensor cores, not where it is emulated.
+
+    torch.cuda.is_bf16_supported() answers True on Turing (sm_75) because bf16 is
+    emulated there. Measured on an RTX 2060 that emulation runs at 3.2 TFLOPS
+    against 24.3 for fp16 — picking bf16 on such a card costs roughly 7x
+    throughput, so the check requires real hardware support.
+    """
     if device.type == "cuda":
-        return torch.cuda.is_bf16_supported()
+        try:
+            return bool(torch.cuda.is_bf16_supported(including_emulation=False))
+        except TypeError:
+            # Older torch has no such parameter; Ampere (sm_80) is the cutoff.
+            return torch.cuda.get_device_properties(device).major >= 8
     if device.type == "mps":
         return True
     return hasattr(torch, "bfloat16")
@@ -53,6 +64,9 @@ def resolve_dtype(device: torch.device, requested: str = "auto") -> torch.dtype:
 
 def enable_fast_math() -> None:
     """Turn on the TF32 and matmul settings that cost accuracy we do not need."""
+    # Expandable segments let the allocator grow a block instead of stranding
+    # freed-but-unusable memory. On a 6 GB card that reclaims hundreds of MB.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True

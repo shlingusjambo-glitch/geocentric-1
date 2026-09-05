@@ -18,6 +18,7 @@ def build_optimizer(
     weight_decay: float = 0.1,
     betas: Tuple[float, float] = (0.9, 0.95),
     device_type: str = "cuda",
+    quiet: bool = False,
 ) -> torch.optim.Optimizer:
     """AdamW with correct parameter groups and the fused kernel where available.
 
@@ -44,6 +45,8 @@ def build_optimizer(
     if "fused" in inspect.signature(torch.optim.AdamW).parameters and device_type == "cuda":
         kwargs["fused"] = True
     optimizer = torch.optim.AdamW(groups, **kwargs)
+    if quiet:
+        return optimizer
     print(
         f"AdamW: {len(decay)} decayed tensors ({sum(p.numel() for p in decay):,} params), "
         f"{len(no_decay)} undecayed ({sum(p.numel() for p in no_decay):,})"
@@ -136,17 +139,128 @@ def format_progress(step: int, total: int, loss: float, lr: float, tps: float, m
     return " | ".join(parts)
 
 
-def estimate_batch_size(
-    n_params: int, block_size: int, vram_gb: float, gradient_checkpointing: bool
+def find_batch_size(
+    model: nn.Module,
+    block_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    learning_rate: float = 6e-4,
+    weight_decay: float = 0.1,
+    max_batch: int = 64,
+    safety: float = 0.85,
+    probe_steps: int = 3,
 ) -> int:
-    """Pick a micro-batch that fits, so the run does not die minutes in with OOM."""
+    """Find the largest micro-batch that survives several real training steps.
+
+    Analytic estimates do not survive contact with a real allocator: activation
+    memory depends on the SwiGLU hidden width, what autograd chooses to save, and
+    how fragmented the cache is. Measuring is cheap and is the difference between a
+    run that starts and one that dies an hour in.
+
+    The probe is non-destructive. It takes real optimizer steps on random data — so
+    that optimizer state and fp16 unscaling are included in the measurement — then
+    restores the original weights from a CPU snapshot and discards its throwaway
+    optimizer. Probing with the caller's optimizer would leave the model trained on
+    noise and its Adam moments seeded with garbage.
+
+    Two further details: the budget comes from cuda.mem_get_info(), which excludes
+    memory other processes (a desktop compositor, say) already hold; and more than
+    one step is probed, because optimizer state is only allocated on the first step
+    and steady-state usage is strictly higher.
+    """
+    if device.type != "cuda":
+        return 4
+
+    free_bytes, _total = torch.cuda.mem_get_info(device)
+    budget = free_bytes * safety
+    was_training = model.training
+    model.train()
+    vocab = int(getattr(model.config, "vocab_size", 32000))
+
+    snapshot = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
+    probe_optimizer = build_optimizer(
+        model, learning_rate, weight_decay, device_type="cuda", quiet=True
+    )
+    scaler = torch.amp.GradScaler(enabled=(dtype == torch.float16))
+
+    def fits(batch: int) -> bool:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        try:
+            for _ in range(probe_steps):
+                ids = torch.randint(0, vocab, (batch, block_size), device=device)
+                with torch.amp.autocast(device_type="cuda", dtype=dtype, enabled=dtype != torch.float32):
+                    _, loss = model(ids, labels=ids)
+                scaler.scale(loss).backward()
+                scaler.step(probe_optimizer)
+                scaler.update()
+                probe_optimizer.zero_grad(set_to_none=True)
+            return torch.cuda.max_memory_allocated() < budget
+        except torch.OutOfMemoryError:
+            return False
+        finally:
+            probe_optimizer.zero_grad(set_to_none=True)
+            model.zero_grad(set_to_none=True)
+            torch.cuda.empty_cache()
+
+    try:
+        best = 0
+        candidate = 1
+        while candidate <= max_batch and fits(candidate):
+            best = candidate
+            candidate *= 2
+
+        if best == 0:
+            raise RuntimeError(
+                f"A single sequence of {block_size} tokens does not fit in the "
+                f"{free_bytes / 1024**3:.1f} GB free on this device. Reduce --block_size, "
+                "choose a smaller --preset, or add --gradient_checkpointing."
+            )
+
+        low, high = best, min(best * 2, max_batch)
+        while low + 1 < high:
+            mid = (low + high) // 2
+            if fits(mid):
+                low = mid
+            else:
+                high = mid
+    finally:
+        # Undo everything the probe did before the real run starts.
+        probe_optimizer.zero_grad(set_to_none=True)
+        del probe_optimizer
+        model.load_state_dict({k: v.to(device) for k, v in snapshot.items()})
+        del snapshot
+        if not was_training:
+            model.eval()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
+    print(f"Auto batch size: {low} x {block_size} tokens (measured against {free_bytes / 1024**3:.1f} GB free)")
+    return low
+
+
+def estimate_batch_size(
+    n_params: int,
+    n_layer: int,
+    n_embd: int,
+    block_size: int,
+    vram_gb: float,
+    gradient_checkpointing: bool = False,
+) -> int:
+    """Coarse pre-flight guess used only before a model exists.
+
+    Prefer find_batch_size(), which measures. This exists so the CLI can print a
+    plan before allocating anything.
+    """
     if vram_gb <= 0:
         return 4
-    # Weights + Adam moments + grads in mixed precision, roughly 12 bytes per param.
-    state_gb = n_params * 12 / 1024**3
-    headroom = max(0.5, vram_gb * 0.85 - state_gb)
-    per_seq_gb = (block_size * n_params ** 0.5 * 2e-6) / 1024
+    state_gb = n_params * 16 / 1024**3
+    headroom_gb = vram_gb * 0.75 - state_gb
+    if headroom_gb <= 0.25:
+        return 1
+    # The SwiGLU hidden layer is ~2.7x n_embd, and autograd saves both branches, so
+    # per-token activation cost is far above the naive n_embd x n_layer figure.
+    per_seq_bytes = block_size * n_embd * n_layer * 2 * 40
     if gradient_checkpointing:
-        per_seq_gb *= 0.35
-    batch = int(headroom / max(1e-6, per_seq_gb))
-    return max(1, min(64, batch))
+        per_seq_bytes *= 0.25
+    return max(1, min(64, int((headroom_gb * 1024**3) / max(1.0, per_seq_bytes))))
