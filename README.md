@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="geocentric/web/logo.png" alt="Geocentric" width="560">
+</p>
+
 # Geocentric
 
 Train a causal language model from scratch — tokenizer, architecture, data diet, and
 all — on a single GPU. Then watermark it, benchmark it, teach it to see, and ship it.
-No agents, no web search, no desktop app. Just the training lab.
+A local training lab with a browser-based chat workspace for your checkpoints.
 
 ```bash
 pip install -e .
@@ -16,6 +20,22 @@ geocentric release --model_dir runs/geocentric --output_dir dist/mymodel
 ```
 
 ---
+
+## Measured progress
+
+<img src="docs/assets/mascot-thumbs-up.png" alt="Geocentric mascot giving a thumbs-up" align="right" width="190">
+
+**Built locally. Measured openly.**
+
+- **18.9% faster inference** in the controlled M4 comparison: 74.3 → 88.3 tokens/sec.
+- **65.4% less optimizer-state memory** with experimental balanced momentum in the measured embedding-heavy configuration.
+- **About 10% faster training** in the previous M4 context-folding benchmark.
+
+These are separate experiments, not cumulative gains. Memory figures describe optimizer state, not total VRAM. RTX 2060 results for the new options remain unverified.
+
+[Methods, raw results and limitations](research/benchmarks/INFERENCE_AND_BALANCED.md) · [Earlier training benchmarks](research/benchmarks/REPORT.md)
+
+<br clear="right">
 
 ## What the model is
 
@@ -155,7 +175,7 @@ training research; each gear has a measurable cost as well as a potential benefi
 geocentric pretrain --data_path corpus.txt --preset 250m --epicycle speed
 ```
 
-`off` (default) · `speed` · `quality` · `memory` · `full` · `capacity` (experimental). None of them changes the
+`off` (default) · `speed` · `quality` · `memory` · `full` · `capacity` · `balanced` (experimental). None of them changes the
 architecture: an EPICYCLE checkpoint is an ordinary checkpoint that loads in code that
 has never heard of it.
 
@@ -347,7 +367,7 @@ card claims, and a `manifest.json` with a SHA-256 for each file.
 geocentric try --model_dir runs/geocentric-120m
 ```
 
-`try` starts the bundled Geocentric web app on port 8000, prints localhost and LAN/Wi-Fi URLs, and opens your browser. Connect from another device on the same network using the printed LAN URL. No Node installation or cloud service is needed. The app includes streaming, stop, regenerate, editable turns, searchable browser-local history, code copying, export, settings, and your Geocentric artwork.
+`try` starts the bundled Geocentric web app on port 8000, prints localhost and LAN/Wi-Fi URLs, and opens your browser. Connect from another device on the same network using the printed LAN URL. No Node installation or cloud service is needed. The app includes streaming, stop, regenerate, editable turns, searchable browser-local history, conversation renaming, undo for deletions, saved drafts, code copying, export, settings, and Geocentric artwork. Its warm light and charcoal dark themes adapt the supplied design references. Starter prompts follow the checkpoint’s conversation mode.
 
 ```bash
 geocentric try --model_dir runs/geocentric-120m --port 8000 --no_browser

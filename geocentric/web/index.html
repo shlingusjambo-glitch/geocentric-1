@@ -12,7 +12,8 @@
     <link rel="stylesheet" href="/style.css" />
     <script src="/app.js" defer></script>
   </head>
-  <body>
+  <body class="empty">
+    <a class="skip-link" href="#prompt">Skip to message</a>
     <aside id="sidebar" aria-label="Chat sidebar">
       <div class="side-top">
         <a class="brand" href="/" aria-label="Geocentric home"
@@ -43,14 +44,16 @@
         aria-label="Search conversations"
         hidden
       />
-      <div class="history-label">Your chats</div>
+      <div class="history-label">Conversations</div>
       <nav id="history" aria-label="Conversation history"></nav>
       <button class="profile" id="profile">
         <img
           class="avatar mascot"
           src="/mascot.png"
           alt="Geocentric mascot"
-        /><span><strong>Geocentric</strong><small>Local workspace</small></span
+        /><span
+          ><strong>Geocentric</strong
+          ><small>Appearance &amp; preferences</small></span
         ><span data-icon="settings"></span>
       </button>
     </aside>
@@ -85,7 +88,11 @@
           src="/mascot.png"
           alt="Geocentric mascot"
         />
-        <h1>What can I help with?</h1>
+        <p class="eyebrow">A LITTLE CURIOSITY GOES A LONG WAY</p>
+        <h1>Where shall we begin?</h1>
+        <p id="welcome-description">
+          A place to think, create, and explore. Start with what’s on your mind.
+        </p>
       </section>
       <div id="composer-area">
         <div id="error" role="alert" hidden></div>
@@ -99,7 +106,8 @@
           ></textarea>
           <div class="composer-tools">
             <button type="button" id="composer-settings" class="tool-button">
-              <span data-icon="sliders"></span>Tools</button
+              <span data-icon="sliders"></span
+              ><span id="composer-mode">Response settings</span></button
             ><span id="status" aria-live="polite"></span
             ><button
               type="submit"
@@ -119,13 +127,25 @@
           </div>
         </form>
         <p class="footnote">
-          Geocentric can make mistakes. Check important information.
+          <span>Powered by your local model.</span>
+          <span>Check important information.</span>
         </p>
       </div>
+      <section id="suggestions" aria-label="Ideas to get started"></section>
+      <button
+        id="jump-latest"
+        class="icon-button"
+        aria-label="Jump to latest message"
+        data-icon="arrow"
+        hidden
+      ></button>
     </main>
-    <dialog id="settings">
+    <dialog id="settings" aria-labelledby="settings-title">
       <div class="dialog-head">
-        <h2>Settings</h2>
+        <div>
+          <p class="eyebrow">MAKE IT YOURS</p>
+          <h2 id="settings-title">Settings</h2>
+        </div>
         <button
           class="icon-button"
           id="close-settings"
@@ -152,6 +172,7 @@
         Automatic uses text continuation for a base model and chat formatting
         for instruction-tuned models.
       </p>
+      <p class="settings-section">Response preferences</p>
       <label
         >Temperature<input
           id="temperature"
@@ -194,6 +215,22 @@
         <button id="export-chat">Export chat</button
         ><button id="save-settings" class="primary">Done</button>
       </div>
+    </dialog>
+    <dialog id="rename-dialog" aria-labelledby="rename-title">
+      <form id="rename-form">
+        <h2 id="rename-title">Rename conversation</h2>
+        <label class="stacked"
+          >Title<input
+            id="chat-title"
+            maxlength="100"
+            required
+            autocomplete="off"
+        /></label>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-rename">Cancel</button
+          ><button class="primary" type="submit">Save title</button>
+        </div>
+      </form>
     </dialog>
     <div id="toast" role="status" hidden></div>
   </body>

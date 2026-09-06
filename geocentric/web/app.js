@@ -55,7 +55,8 @@ let prefs = stored("geocentric.settings.v1", {
   system: "",
 });
 if (!prefs || typeof prefs !== "object") prefs = { theme: "dark" };
-let current = null,
+let current =
+    chats.find((c) => c.id === stored("geocentric.active.v1", null)) || null,
   busy = false,
   controller = null,
   requestId = null,
@@ -78,11 +79,23 @@ function save() {
     toast("Browser storage is full. Export chats before clearing space.");
   }
 }
-function toast(text) {
-  $("toast").textContent = text;
+let toastTimer;
+function toast(text, undo) {
+  clearTimeout(toastTimer);
+  $("toast").replaceChildren(document.createTextNode(text));
+  if (undo) {
+    const button = document.createElement("button");
+    button.textContent = "Undo";
+    button.onclick = () => {
+      undo();
+      $("toast").hidden = true;
+    };
+    $("toast").append(button);
+  }
   $("toast").hidden = false;
-  setTimeout(() => ($("toast").hidden = true), 2500);
+  toastTimer = setTimeout(() => ($("toast").hidden = true), undo ? 8000 : 3000);
 }
+
 function applyTheme() {
   document.body.classList.toggle(
     "light",
@@ -104,51 +117,123 @@ $("collapse").onclick = () =>
     ? closeSidebar()
     : document.body.classList.add("sidebar-closed");
 $("overlay").onclick = closeSidebar;
+let renaming = null;
+function renameChat(chat) {
+  renaming = chat;
+  $("chat-title").value = chat.title;
+  $("rename-dialog").showModal();
+  $("chat-title").select();
+}
+$("cancel-rename").onclick = () => $("rename-dialog").close();
+$("rename-form").onsubmit = (e) => {
+  e.preventDefault();
+  const title = $("chat-title").value.trim();
+  if (!title || !renaming) return;
+  renaming.title = title;
+  save();
+  history();
+  $("rename-dialog").close();
+};
 function history() {
   const nav = $("history");
   nav.replaceChildren();
-  const query = $("search").value.toLowerCase();
-  for (const chat of chats.filter((c) =>
-    c.title.toLowerCase().includes(query),
+  const query = $("search").value.toLowerCase().trim();
+  let lastGroup = "";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  for (const chat of chats.filter(
+    (c) =>
+      c.title.toLowerCase().includes(query) ||
+      c.messages.some(
+        (m) =>
+          m &&
+          typeof m.content === "string" &&
+          m.content.toLowerCase().includes(query),
+      ),
   )) {
+    const date = chat.updated || chat.created || 0;
+    const group =
+      date >= +today ? "Today" : date >= +yesterday ? "Yesterday" : "Earlier";
+    if (!query && group !== lastGroup) {
+      const heading = document.createElement("h3");
+      heading.className = "history-group";
+      heading.textContent = group;
+      nav.append(heading);
+      lastGroup = group;
+    }
     const row = document.createElement("div");
     row.className = "history-item" + (current === chat ? " active" : "");
     const button = document.createElement("button");
     button.className = "history-title";
     button.textContent = chat.title;
+    button.title = chat.title;
+    if (current === chat) button.setAttribute("aria-current", "page");
     button.onclick = () => {
       if (busy) return toast("Stop the current response first.");
+      persistDraft();
       current = chat;
+      restoreDraft();
       render();
       closeSidebar();
+      window.scrollTo(0, document.body.scrollHeight);
     };
-    const del = document.createElement("button");
-    del.className = "icon-button history-delete";
-    del.setAttribute("aria-label", "Delete " + chat.title);
-    del.append(icon("trash"));
-    del.onclick = () => {
-      if (busy) return;
+    const rename = action("Rename " + chat.title, "compose", () =>
+      renameChat(chat),
+    );
+    rename.classList.add("history-rename");
+    const del = action("Delete " + chat.title, "trash", () => {
+      if (busy) return toast("Stop the current response first.");
+      persistDraft();
+      const index = chats.indexOf(chat),
+        selected = current === chat;
       chats = chats.filter((c) => c !== chat);
-      if (current === chat) current = null;
+      if (selected) {
+        current = null;
+        restoreDraft();
+      }
       save();
       render();
-    };
-    row.append(button, del);
+      toast("Conversation deleted", () => {
+        chats.splice(Math.min(index, chats.length), 0, chat);
+        if (selected && !busy) {
+          persistDraft();
+          current = chat;
+          restoreDraft();
+        }
+        save();
+        if (busy) history();
+        else render();
+      });
+    });
+    del.classList.add("history-delete");
+    row.append(button, rename, del);
     nav.append(row);
   }
   if (!nav.children.length) {
     const empty = document.createElement("p");
     empty.className = "history-empty";
     empty.textContent = query
-      ? "No matching chats"
-      : "Your conversations will appear here";
+      ? "No conversations found. Try another word."
+      : "A fresh page. Your conversations will find a home here.";
     nav.append(empty);
   }
 }
+
 function inline(parent, text) {
-  for (const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)) {
+  for (const part of text.split(
+    /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g,
+  )) {
     let node;
-    if (part.startsWith("**") && part.endsWith("**")) {
+    const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+    if (link) {
+      node = document.createElement("a");
+      node.textContent = link[1];
+      node.href = link[2];
+      node.target = "_blank";
+      node.rel = "noopener noreferrer";
+    } else if (part.startsWith("**") && part.endsWith("**")) {
       node = document.createElement("strong");
       node.textContent = part.slice(2, -2);
     } else if (part.startsWith("`") && part.endsWith("`")) {
@@ -160,38 +245,74 @@ function inline(parent, text) {
 }
 function markdown(target, text) {
   target.replaceChildren();
-  const pieces = text.split(/```/);
-  pieces.forEach((piece, i) => {
+  text.split(/```/).forEach((piece, i) => {
     if (i % 2) {
-      const first = piece.indexOf("\n");
-      const language = first < 0 ? "code" : piece.slice(0, first).trim();
-      const codeText = first < 0 ? piece : piece.slice(first + 1);
+      const first = piece.indexOf("\n"),
+        codeText = first < 0 ? piece : piece.slice(first + 1);
       const wrap = document.createElement("div");
       wrap.className = "code-wrap";
       const head = document.createElement("div");
       head.className = "code-head";
       const label = document.createElement("span");
-      label.textContent = language || "code";
+      label.textContent =
+        first < 0 ? "code" : piece.slice(0, first).trim() || "code";
       const copy = document.createElement("button");
       copy.textContent = "Copy code";
       copy.onclick = () => copyText(codeText);
-      head.append(label, copy);
       const pre = document.createElement("pre"),
         code = document.createElement("code");
       code.textContent = codeText;
       pre.append(code);
+      head.append(label, copy);
       wrap.append(head, pre);
       target.append(wrap);
-    } else
-      for (const para of piece.split(/\n\s*\n/)) {
-        if (!para) continue;
-        const match = para.match(/^(#{1,3})\s+([^\n]+)$/);
-        const node = document.createElement(match ? "h3" : "p");
-        inline(node, match ? match[2] : para);
-        target.append(node);
+      return;
+    }
+    let paragraph = [],
+      list = null,
+      listKind = null;
+    const flush = () => {
+      if (paragraph.length) {
+        const p = document.createElement("p");
+        inline(p, paragraph.join("\n"));
+        target.append(p);
+        paragraph = [];
       }
+    };
+    for (const line of piece.split("\n")) {
+      const heading = line.match(/^(#{1,3})\s+(.+)$/);
+      const item = line.match(/^\s*(?:([-*+])|\d+\.)\s+(.+)$/);
+      const quote = line.match(/^>\s?(.*)$/);
+      if (item) {
+        flush();
+        const kind = item[1] ? "ul" : "ol";
+        if (!list || kind !== listKind) {
+          list = document.createElement(kind);
+          listKind = kind;
+          target.append(list);
+        }
+        const li = document.createElement("li");
+        inline(li, item[2]);
+        list.append(li);
+        continue;
+      }
+      list = null;
+      listKind = null;
+      if (heading || quote || !line.trim()) {
+        flush();
+        if (heading || quote) {
+          const node = document.createElement(
+            heading ? "h" + (heading[1].length + 1) : "blockquote",
+          );
+          inline(node, heading ? heading[2] : quote[1]);
+          target.append(node);
+        }
+      } else paragraph.push(line);
+    }
+    flush();
   });
 }
+
 async function copyText(text) {
   try {
     if (navigator.clipboard && window.isSecureContext)
@@ -201,8 +322,11 @@ async function copyText(text) {
       box.value = text;
       document.body.append(box);
       box.select();
-      if (!document.execCommand("copy")) throw Error();
-      box.remove();
+      try {
+        if (!document.execCommand("copy")) throw Error();
+      } finally {
+        box.remove();
+      }
     }
     toast("Copied");
   } catch {
@@ -219,9 +343,19 @@ function action(label, name, fn) {
   return b;
 }
 function render() {
+  try {
+    localStorage.setItem(
+      "geocentric.active.v1",
+      JSON.stringify(current?.id || null),
+    );
+  } catch {}
   history();
   document.body.classList.toggle("empty", !current?.messages.length);
   $("welcome").hidden = !!current?.messages.length;
+  $("jump-latest").hidden =
+    !current?.messages.length ||
+    innerHeight + scrollY >= document.body.scrollHeight - 180;
+  document.title = current ? current.title + " · Geocentric" : "Geocentric";
   const root = $("messages");
   root.replaceChildren();
   (current?.messages || []).forEach((message, index) => {
@@ -306,9 +440,54 @@ function render() {
 function resize() {
   $("prompt").style.height = "auto";
   $("prompt").style.height = Math.min($("prompt").scrollHeight, 220) + "px";
+  $("jump-latest").style.bottom = $("composer-area").offsetHeight + 16 + "px";
   $("send").disabled = busy || !model || !$("prompt").value.trim();
 }
-$("prompt").addEventListener("input", resize);
+let draftTimer;
+function persistDraft() {
+  clearTimeout(draftTimer);
+  try {
+    localStorage.setItem(
+      "geocentric.draft." + (current?.id || "new"),
+      $("prompt").value,
+    );
+  } catch {}
+}
+function restoreDraft() {
+  try {
+    $("prompt").value =
+      localStorage.getItem("geocentric.draft." + (current?.id || "new")) || "";
+  } catch {
+    $("prompt").value = "";
+  }
+  resize();
+}
+$("prompt").addEventListener("input", () => {
+  resize();
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(persistDraft, 250);
+});
+window.addEventListener("pagehide", persistDraft);
+const systemTheme = matchMedia("(prefers-color-scheme: light)");
+systemTheme.addEventListener("change", applyTheme);
+window.addEventListener("resize", resize);
+$("jump-latest").onclick = () =>
+  window.scrollTo({
+    top: document.body.scrollHeight,
+    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "instant"
+      : "smooth",
+  });
+window.addEventListener(
+  "scroll",
+  () => {
+    $("jump-latest").hidden =
+      !current?.messages.length ||
+      innerHeight + scrollY >= document.body.scrollHeight - 180;
+  },
+  { passive: true },
+);
+
 $("prompt").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
@@ -317,8 +496,9 @@ $("prompt").addEventListener("keydown", (e) => {
 });
 $("new-chat").onclick = () => {
   if (busy) return toast("Stop the current response first.");
+  persistDraft();
   current = null;
-  $("prompt").value = "";
+  restoreDraft();
   $("error").hidden = true;
   render();
   resize();
@@ -347,7 +527,6 @@ function setBusy(value) {
 async function send() {
   const content = $("prompt").value.trim();
   if (!content || busy || !model) return;
-  const existing = current;
   if (!current) {
     current = {
       id: uuid(),
@@ -358,6 +537,13 @@ async function send() {
     chats.unshift(current);
   }
   const chat = current;
+  chat.updated = Date.now();
+  chats = [chat, ...chats.filter((c) => c !== chat)];
+  clearTimeout(draftTimer);
+  try {
+    localStorage.removeItem("geocentric.draft.new");
+    localStorage.removeItem("geocentric.draft." + chat.id);
+  } catch {}
   chat.messages.push({ role: "user", content });
   const outgoing = chat.messages.map((m) => ({
     role: m.role,
@@ -370,6 +556,8 @@ async function send() {
   setBusy(true);
   render();
   save();
+  window.scrollTo(0, document.body.scrollHeight);
+  const streamingBody = $("messages").lastElementChild.querySelector(".body");
   controller = new AbortController();
   requestId = uuid();
   let completed = false;
@@ -403,7 +591,7 @@ async function send() {
           response.content += event.text;
           const nearBottom =
             innerHeight + scrollY >= document.body.scrollHeight - 180;
-          render();
+          markdown(streamingBody, response.content);
           if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
         } else if (event.type === "done") {
           response.stats = event;
@@ -425,8 +613,10 @@ async function send() {
     requestId = null;
     controller = null;
     save();
+    const nearBottom =
+      innerHeight + scrollY >= document.body.scrollHeight - 180;
     render();
-    $("prompt").focus();
+    if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
   }
 }
 $("composer").onsubmit = (e) => {
@@ -473,6 +663,7 @@ $("save-settings").onclick = () => {
     localStorage.setItem("geocentric.settings.v1", JSON.stringify(prefs));
   } catch {}
   applyTheme();
+  updateWelcome();
   $("settings").close();
 };
 $("export-chat").onclick = () => {
@@ -506,12 +697,91 @@ async function connect() {
       model.context - 1,
     );
     $("connection").hidden = true;
+    updateWelcome();
   } catch (error) {
     $("connection").textContent = error.message + " Refresh to reconnect.";
     $("connection").hidden = false;
   }
   resize();
 }
+function updateWelcome() {
+  if (!model) return;
+  const base = (prefs.mode === "auto" ? model.mode : prefs.mode) === "base";
+  $("mode-badge").textContent = base ? "Text continuation" : "Chat";
+  $("composer-mode").textContent = base
+    ? "Text continuation"
+    : "Response settings";
+  $("prompt").placeholder = base
+    ? "Start a thought. See where it goes…"
+    : "Ask, imagine, or work through an idea…";
+  $("welcome-description").textContent = base
+    ? "Every idea starts somewhere. Give your model a few words to continue."
+    : "A place to think, create, and explore. Start with what’s on your mind.";
+  const prompts = base
+    ? [
+        [
+          "compose",
+          "Start a story",
+          "A little spark of imagination",
+          "Beyond the edge of the forest, there was",
+        ],
+        [
+          "search",
+          "Explore an idea",
+          "Follow a thread of curiosity",
+          "One of the most fascinating things about the natural world is",
+        ],
+        [
+          "sliders",
+          "Think it through",
+          "Find a new perspective",
+          "The first step toward solving a difficult problem is",
+        ],
+      ]
+    : [
+        [
+          "compose",
+          "Create something",
+          "Find the words you’re looking for",
+          "Help me write a short story. Start by asking what kind of story I have in mind.",
+        ],
+        [
+          "search",
+          "Make sense of it",
+          "Turn a question into understanding",
+          "Explain a fascinating idea from science using a simple everyday example.",
+        ],
+        [
+          "sliders",
+          "Think it through",
+          "Give your next idea some space",
+          "Help me think through an idea. Ask me what I’m working on, then help me explore it.",
+        ],
+      ];
+  $("suggestions").replaceChildren();
+  for (const [symbol, title, description, prompt] of prompts) {
+    const button = document.createElement("button");
+    button.className = "suggestion";
+    const text = document.createElement("div"),
+      strong = document.createElement("strong"),
+      small = document.createElement("small");
+    strong.textContent = title;
+    small.textContent = description;
+    text.append(strong, small);
+    button.append(icon(symbol), text);
+    button.onclick = () => {
+      $("prompt").value = prompt;
+      persistDraft();
+      resize();
+      $("prompt").focus();
+    };
+    $("suggestions").append(button);
+  }
+}
+const shortcut = document.querySelector(".shortcut");
+shortcut.textContent = /Mac|iPhone|iPad/.test(navigator.platform)
+  ? "⌘ K"
+  : "Ctrl K";
 render();
-resize();
+restoreDraft();
 connect();

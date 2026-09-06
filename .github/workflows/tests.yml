@@ -21,6 +21,16 @@ jobs:
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install -e '.[dev]'
       - run: python -m pytest -q
+  web-ui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --prefix /tmp/geocentric-ui-tests --no-save --no-package-lock jsdom@26.1.0
+      - run: node --check geocentric/web/app.js
+      - run: NODE_PATH=/tmp/geocentric-ui-tests/node_modules node --test tests/web_ui.test.cjs
   ubuntu-2604:
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
