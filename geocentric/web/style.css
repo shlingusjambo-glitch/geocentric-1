@@ -952,3 +952,267 @@ dialog textarea,
     scroll-behavior: auto !important;
   }
 }
+/* Canvas and conversation branches share the app's quiet, bordered surfaces. */
+.new-label {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin-left: auto;
+  border: 1px solid var(--border);
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+#branch-banner {
+  max-width: var(--reading);
+  width: calc(100% - 64px);
+  margin: 0 auto 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+#branch-banner button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+#branch-banner svg {
+  width: 15px;
+  height: 15px;
+}
+#map-dialog {
+  width: min(700px, calc(100% - 32px));
+}
+.branch-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  column-gap: 10px;
+  width: calc(100% - 100px);
+  min-width: 180px;
+  border: 1px solid var(--border);
+  background: var(--soft);
+  border-radius: 10px;
+  padding: 14px;
+  margin-top: 10px;
+  text-align: left;
+}
+.branch-node:hover {
+  border-color: var(--muted);
+}
+.branch-node.selected {
+  border-color: var(--accent);
+}
+.branch-node strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.branch-node small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 5px;
+}
+.branch-node svg {
+  grid-row: span 2;
+  color: var(--accent);
+  width: 16px;
+}
+.map-empty {
+  padding: 32px 10px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+#workshop {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(54vw, 900px);
+  z-index: 25;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.workshop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px;
+  border-bottom: 1px solid var(--border);
+}
+.workshop-head h2 {
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+.workshop-head .eyebrow {
+  font-size: 9px;
+  margin-bottom: 6px;
+}
+.workshop-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.workshop-toolbar [role="group"] {
+  display: flex;
+  gap: 3px;
+  background: var(--side);
+  padding: 3px;
+  border-radius: 8px;
+}
+.workshop-toolbar button {
+  padding: 7px 11px;
+  border-radius: 6px;
+}
+.workshop-toolbar button[aria-pressed="true"] {
+  background: var(--card);
+  color: var(--text);
+}
+.workshop-toolbar button[aria-pressed="false"] {
+  color: var(--muted);
+}
+#run-canvas {
+  border: 1px solid var(--border);
+}
+#run-canvas span {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+#canvas-stage {
+  flex: 1;
+  min-height: 0;
+  background: #faf8f5;
+}
+#canvas-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: white;
+}
+#canvas-source {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  background: var(--side);
+  padding: 22px;
+  font:
+    13px/1.7 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  tab-size: 2;
+  outline: none;
+  white-space: pre;
+  overflow: auto;
+}
+.canvas-footer {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+#canvas-status {
+  font-size: 10px;
+  color: var(--muted);
+  max-width: 65%;
+  line-height: 1.5;
+}
+#download-canvas {
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 7px 0;
+}
+.canvas-open #main {
+  margin-right: min(54vw, 900px);
+}
+.canvas-open #welcome h1 {
+  font-size: 26px;
+}
+.canvas-open #suggestions {
+  grid-template-columns: 1fr;
+}
+.canvas-open .suggestion {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.canvas-open .suggestion svg {
+  margin: 0;
+}
+.canvas-open .suggestion small {
+  display: none;
+}
+.canvas-open #welcome .eyebrow {
+  display: none;
+}
+.canvas-open #main header {
+  padding-inline: 14px;
+}
+.canvas-open #jump-latest {
+  right: calc(min(54vw, 900px) + 16px);
+}
+@media (max-width: 1100px) {
+  #workshop {
+    width: 65vw;
+  }
+  .canvas-open #main {
+    margin-right: 0;
+  }
+  .canvas-open #sidebar {
+    transform: translateX(-100%);
+  }
+  .canvas-open #main {
+    margin-left: 0;
+  }
+  .canvas-open #main::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: #0006;
+    z-index: 24;
+    pointer-events: none;
+  }
+}
+@media (max-width: 760px) {
+  #workshop {
+    width: 100%;
+  }
+  .workshop-head {
+    padding: 18px;
+  }
+  .workshop-toolbar {
+    padding: 10px 14px;
+  }
+  .canvas-footer {
+    padding: 12px 14px;
+  }
+  #run-canvas span {
+    display: none;
+  }
+  .branch-node {
+    width: calc(100% - 40px);
+  }
+  #branch-banner {
+    width: calc(100% - 40px);
+  }
+}
+
+.canvas-open #sidebar {
+  transform: translateX(-100%);
+}
+.canvas-open #main {
+  margin-left: 0;
+}

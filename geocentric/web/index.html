@@ -44,6 +44,13 @@
         aria-label="Search conversations"
         hidden
       />
+      <button class="nav-button" id="conversation-map">
+        <span data-icon="branch"></span>Conversation map
+      </button>
+      <button class="nav-button" id="open-workshop">
+        <span data-icon="canvas"></span>Canvas
+        <span class="new-label">NEW</span>
+      </button>
       <div class="history-label">Conversations</div>
       <nav id="history" aria-label="Conversation history"></nav>
       <button class="profile" id="profile">
@@ -78,6 +85,7 @@
           data-icon="sliders"
         ></button>
       </header>
+      <div id="branch-banner" hidden></div>
       <div id="connection" role="status" hidden></div>
       <section id="conversation" aria-label="Conversation" tabindex="0">
         <div id="messages"></div>
@@ -232,6 +240,76 @@
         </div>
       </form>
     </dialog>
+    <dialog id="map-dialog" aria-labelledby="map-title">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">EVERY POSSIBILITY, KEPT</p>
+          <h2 id="map-title">Conversation map</h2>
+        </div>
+        <button
+          id="close-map"
+          class="icon-button"
+          aria-label="Close conversation map"
+          data-icon="close"
+        ></button>
+      </div>
+      <p class="setting-help">
+        Follow an idea in a new direction. Your original conversation stays
+        intact.
+      </p>
+      <div id="branch-map"></div>
+    </dialog>
+    <section id="workshop" aria-labelledby="workshop-title" hidden>
+      <div class="workshop-head">
+        <div>
+          <p class="eyebrow">FROM WORDS TO SOMETHING REAL</p>
+          <h2 id="workshop-title">Canvas</h2>
+        </div>
+        <button
+          id="close-workshop"
+          class="icon-button"
+          aria-label="Close canvas"
+          data-icon="close"
+        ></button>
+      </div>
+      <div class="workshop-toolbar">
+        <div role="group" aria-label="Canvas view">
+          <button id="show-preview" aria-pressed="true">Preview</button
+          ><button id="show-source" aria-pressed="false">Code</button>
+        </div>
+        <button id="run-canvas">Run changes <span>⌘ ↵</span></button>
+      </div>
+      <div id="canvas-stage">
+        <iframe
+          id="canvas-frame"
+          name="geocentric-canvas"
+          title="Isolated artifact preview"
+          sandbox="allow-scripts"
+          referrerpolicy="no-referrer"
+        ></iframe>
+      </div>
+      <textarea
+        id="canvas-source"
+        aria-label="Artifact source code"
+        spellcheck="false"
+        hidden
+      ></textarea>
+      <div class="canvas-footer">
+        <span id="canvas-status" aria-live="polite"
+          >HTML, CSS and inline JavaScript. External resources are
+          blocked.</span
+        ><button id="download-canvas">Download HTML</button>
+      </div>
+    </section>
+    <form
+      id="canvas-transport"
+      method="post"
+      action="/api/preview"
+      target="geocentric-canvas"
+      hidden
+    >
+      <textarea name="code" id="canvas-payload"></textarea>
+    </form>
     <div id="toast" role="status" hidden></div>
   </body>
 </html>

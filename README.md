@@ -361,6 +361,19 @@ writes a directory containing the weights (optimizer state stripped), the tokeni
 the config, `MODEL_CARD.md`, the full `PARALLAX.md` report backing every number the
 card claims, and a `manifest.json` with a SHA-256 for each file.
 
+## Canvas and conversation branches
+
+Turn an HTML/SVG answer into a working preview with **Open in Canvas**. Edit the
+source, run it alongside the conversation, and download the result. The sidebar's
+Canvas includes a small interactive starter to try immediately. It supports inline
+HTML, CSS and JavaScript in an isolated frame; external resources are blocked.
+
+Explore alternatives with **Branch from here**. Editing or regenerating now keeps
+the original conversation intact, and **Conversation map** lets you move between
+paths. Everything stays in your browser's local workspace.
+
+[Canvas, branching, limits and validation](docs/CANVAS_AND_BRANCHES.md)
+
 ## Testing a checkpoint
 
 ```bash

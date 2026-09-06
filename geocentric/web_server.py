@@ -10,7 +10,7 @@ import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 import torch
 
@@ -150,15 +150,20 @@ class ChatHandler(BaseHTTPRequestHandler):
         # Chat text is never logged by the server.
         pass
 
-    def send_response_headers(self, status, content_type):
+    def send_response_headers(self, status, content_type, preview=False):
         self.send_response(status)
         self.send_header("Content-Type", content_type + "; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; "
-                         "style-src 'self'; img-src 'self' data:; connect-src 'self'; "
-                         "frame-ancestors 'none'; base-uri 'none'")
+        policy = ("sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
+                  "style-src 'unsafe-inline'; img-src data:; font-src data:; "
+                  "connect-src 'none'; frame-src 'none'; object-src 'none'; "
+                  "form-action 'none'; base-uri 'none'; frame-ancestors 'self'") if preview else (
+                  "default-src 'self'; script-src 'self'; style-src 'self'; "
+                  "img-src 'self' data:; connect-src 'self'; frame-src 'self'; "
+                  "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", policy)
         self.end_headers()
 
     def json_response(self, status, payload):
@@ -188,7 +193,18 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not 0 < length <= 256 * 1024:
                 return self.json_response(413, {"error": "Request exceeds 256 KiB"})
             self.connection.settimeout(120)
-            payload = json.loads(self.rfile.read(length))
+            body = self.rfile.read(length)
+            if self.path == "/api/preview":
+                if self.headers.get_content_type() != "application/x-www-form-urlencoded":
+                    return self.json_response(415, {"error": "Expected form-encoded source"})
+                fields = parse_qs(body.decode("utf-8"), max_num_fields=2, keep_blank_values=True)
+                codes = fields.get("code", [])
+                if len(codes) != 1 or len(codes[0].encode("utf-8")) > 60000:
+                    return self.json_response(400, {"error": "Send one code field, up to 60 KB"})
+                self.send_response_headers(200, "text/html", preview=True)
+                self.wfile.write(codes[0].encode("utf-8"))
+                return
+            payload = json.loads(body)
         except (ValueError, OSError):
             return self.json_response(400, {"error": "Invalid JSON request"})
         engine = self.server.engine

@@ -96,3 +96,67 @@ test('settings update mode and retain useful prompts',async t=>{
   assert.equal(w.document.querySelector('#mode-badge').textContent,'Chat');
   assert.match(w.document.querySelector('#prompt').placeholder,/Ask/);
 });
+
+test('editing branches without changing original conversation',async t=>{
+  const original={id:'root',title:'Original',messages:[{role:'user',content:'First question'},{role:'assistant',content:'First answer'},{role:'user',content:'Second question'},{role:'assistant',content:'Second answer'}]};
+  const w=await setup(t,{'geocentric.chats.v1':JSON.stringify([original]),'geocentric.active.v1':JSON.stringify('root')});
+  w.document.querySelector('[aria-label="Edit message"]').click();
+  const chats=JSON.parse(w.localStorage.getItem('geocentric.chats.v1'));
+  assert.deepEqual(chats.find(c=>c.id==='root'),original);
+  assert.equal(chats[0].parentId,'root');
+  assert.equal(chats[0].messages.length,0);
+  assert.equal(w.document.querySelector('#prompt').value,'First question');
+  assert.match(w.document.querySelector('#branch-banner').textContent,/Original/);
+});
+test('branch from an answer copies only its prefix and map navigates back',async t=>{
+  const original={id:'root',title:'Original',messages:[{role:'user',content:'Question'},{role:'assistant',content:'Answer'},{role:'user',content:'Later'}]};
+  const w=await setup(t,{'geocentric.chats.v1':JSON.stringify([original]),'geocentric.active.v1':JSON.stringify('root')});
+  w.document.querySelector('[aria-label="Branch from here"]').click();
+  const chats=JSON.parse(w.localStorage.getItem('geocentric.chats.v1'));
+  assert.equal(chats[0].messages.length,2);
+  assert.equal(chats.find(c=>c.id==='root').messages.length,3);
+  w.document.querySelector('#conversation-map').click();
+  assert.equal(w.document.querySelectorAll('.branch-node').length,2);
+  w.document.querySelector('.branch-node').click();
+  assert.equal(w.document.querySelectorAll('.message').length,3);
+});
+test('canvas uses a sandboxed named frame, edits code and unloads on close',async t=>{
+  const w=await setup(t);let submitted=0;
+  w.TextEncoder=TextEncoder;
+  w.HTMLFormElement.prototype.submit=function(){submitted++};
+  w.document.querySelector('#open-workshop').click();
+  assert.equal(submitted,1);
+  assert.match(w.document.querySelector('#canvas-payload').value,/<\/script>/);
+  const frame=w.document.querySelector('#canvas-frame');
+  assert.equal(frame.getAttribute('sandbox'),'allow-scripts');
+  assert.equal(w.document.querySelector('#canvas-transport').target,frame.name);
+  w.document.querySelector('#show-source').click();
+  assert.equal(w.document.querySelector('#canvas-source').hidden,false);
+  w.document.querySelector('#canvas-source').value='<h1>My artifact</h1>';
+  w.document.querySelector('#run-canvas').click();
+  assert.equal(w.document.querySelector('#canvas-payload').value,'<h1>My artifact</h1>');
+  assert.equal(w.localStorage.getItem('geocentric.canvas.v1'),'<h1>My artifact</h1>');
+  w.document.querySelector('#close-workshop').click();
+  assert.equal(frame.src,'about:blank');
+  assert.equal(w.document.querySelector('#workshop').hidden,true);
+});
+test('HTML code block previews only when explicitly opened',async t=>{
+  const w=await setup(t);w.TextEncoder=TextEncoder;let submitted=0;
+  w.HTMLFormElement.prototype.submit=()=>submitted++;
+  const node=w.document.createElement('div');
+  w.unit.markdown(node,'```html\n<h1>Preview me</h1>\n```');
+  assert.equal(submitted,0);
+  [...node.querySelectorAll('button')].find(b=>b.textContent==='Open in Canvas').click();
+  assert.equal(submitted,1);
+});
+
+test('failed request restores draft without leaving a duplicate user turn',async t=>{
+  const w=await setup(t);
+  w.fetch=async()=>({ok:false,json:async()=>({error:'Model busy'})});
+  w.document.querySelector('#prompt').value='Please retry this';
+  await w.unit.send();
+  assert.equal(w.document.querySelector('#prompt').value,'Please retry this');
+  const chats=JSON.parse(w.localStorage.getItem('geocentric.chats.v1'));
+  assert.equal(chats[0].messages.length,0);
+  assert.match(w.document.querySelector('#error').textContent,/Model busy/);
+});

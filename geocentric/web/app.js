@@ -1,6 +1,8 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const paths = {
+  branch: "M6 3v12a4 4 0 0 0 4 4h8M6 8h8a4 4 0 0 0 4-4M3 3h6M15 3h6M15 19h6",
+  canvas: "M3 4h18v16H3zM3 9h18M8 9v11",
   panel:
     "M8 3v18M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1",
   compose:
@@ -71,10 +73,7 @@ const uuid = () =>
   );
 function save() {
   try {
-    localStorage.setItem(
-      "geocentric.chats.v1",
-      JSON.stringify(chats.slice(0, 150)),
-    );
+    localStorage.setItem("geocentric.chats.v1", JSON.stringify(chats));
   } catch {
     toast("Browser storage is full. Export chats before clearing space.");
   }
@@ -264,6 +263,12 @@ function markdown(target, text) {
       code.textContent = codeText;
       pre.append(code);
       head.append(label, copy);
+      if (["html", "htm", "svg"].includes(label.textContent.toLowerCase())) {
+        const preview = document.createElement("button");
+        preview.textContent = "Open in Canvas";
+        preview.onclick = () => openCanvas(codeText);
+        head.append(preview);
+      }
       wrap.append(head, pre);
       target.append(wrap);
       return;
@@ -350,6 +355,7 @@ function render() {
     );
   } catch {}
   history();
+  renderBranchBanner();
   document.body.classList.toggle("empty", !current?.messages.length);
   $("welcome").hidden = !!current?.messages.length;
   $("jump-latest").hidden =
@@ -393,8 +399,9 @@ function render() {
       actions.append(
         action("Edit message", "compose", () => {
           if (busy) return;
+          forkConversation(current, index, "Edited path");
           $("prompt").value = message.content;
-          current.messages = current.messages.slice(0, index);
+          persistDraft();
           save();
           render();
           resize();
@@ -405,12 +412,20 @@ function render() {
       actions.append(
         action("Regenerate response", "retry", () => {
           if (busy) return;
-          current.messages.pop();
-          const previous = current.messages.pop();
+          const previous = current.messages[index - 1];
+          if (!previous || previous.role !== "user") return;
+          forkConversation(current, index - 1, "Another response");
           if (previous) {
             $("prompt").value = previous.content;
             send();
           }
+        }),
+      );
+    if (message.role === "assistant")
+      actions.append(
+        action("Branch from here", "branch", () => {
+          if (busy) return toast("Stop the current response first.");
+          forkConversation(current, index + 1, "New direction");
         }),
       );
     if (message.stats) {
@@ -607,7 +622,13 @@ async function send() {
       $("error").textContent = error.message;
       $("error").hidden = false;
     }
-    if (!response.content) chat.messages.pop();
+    if (!response.content) {
+      chat.messages.pop(); // Discard the empty assistant placeholder.
+      chat.messages.pop(); // Restore the unsent user turn instead of duplicating it on retry.
+      if (!$("prompt").value) $("prompt").value = content;
+      persistDraft();
+      resize();
+    }
   } finally {
     setBusy(false);
     requestId = null;
@@ -778,6 +799,192 @@ function updateWelcome() {
     $("suggestions").append(button);
   }
 }
+function forkConversation(source, count, label) {
+  if (busy) return;
+  persistDraft();
+  const child = {
+    id: uuid(),
+    title: source.title + " · " + label,
+    created: Date.now(),
+    updated: Date.now(),
+    parentId: source.id,
+    branchAt: count,
+    messages: JSON.parse(JSON.stringify(source.messages.slice(0, count))),
+  };
+  chats.unshift(child);
+  current = child;
+  save();
+  restoreDraft();
+  render();
+  closeSidebar();
+  $("prompt").focus();
+  return child;
+}
+function renderBranchBanner() {
+  const banner = $("branch-banner");
+  banner.replaceChildren();
+  banner.hidden = !current?.parentId;
+  if (!current?.parentId) return;
+  const parent = chats.find((c) => c.id === current.parentId);
+  const button = document.createElement("button");
+  button.append(
+    icon("branch"),
+    document.createTextNode(
+      parent
+        ? "Branched from " + parent.title
+        : "Independent branch · original removed",
+    ),
+  );
+  button.onclick = () => {
+    if (busy) return toast("Stop the current response first.");
+    if (parent) selectConversation(parent);
+    else showMap();
+  };
+  banner.append(button);
+}
+function selectConversation(chat) {
+  persistDraft();
+  current = chat;
+  restoreDraft();
+  render();
+  closeSidebar();
+  $("map-dialog").close();
+  window.scrollTo(0, document.body.scrollHeight);
+}
+function showMap() {
+  const root = $("branch-map");
+  root.replaceChildren();
+  const seen = new Set();
+  const draw = (chat, depth) => {
+    if (seen.has(chat.id)) return;
+    seen.add(chat.id);
+    const button = document.createElement("button");
+    button.className = "branch-node" + (chat === current ? " selected" : "");
+    button.style.marginLeft = Math.min(depth, 5) * 20 + "px";
+    const title = document.createElement("strong"),
+      detail = document.createElement("small");
+    title.textContent = chat.title;
+    detail.textContent =
+      chat.messages.length +
+      " messages" +
+      (chat.parentId
+        ? " · branched after message " + (chat.branchAt || 0)
+        : " · original conversation");
+    button.append(icon(chat.parentId ? "branch" : "compose"), title, detail);
+    if (chat === current) button.setAttribute("aria-current", "true");
+    button.onclick = () => {
+      if (busy) return toast("Stop the current response first.");
+      selectConversation(chat);
+    };
+    root.append(button);
+    chats
+      .filter((c) => c.parentId === chat.id)
+      .forEach((c) => draw(c, depth + 1));
+  };
+  chats
+    .filter((c) => !chats.some((p) => p.id === c.parentId))
+    .slice()
+    .reverse()
+    .forEach((c) => draw(c, 0));
+  chats.forEach((c) => draw(c, 0)); // Also display malformed cyclic legacy relationships once.
+  if (!chats.length) {
+    const p = document.createElement("p");
+    p.className = "map-empty";
+    p.textContent =
+      "Start a conversation, then branch from any answer to explore another direction.";
+    root.append(p);
+  }
+  $("map-dialog").showModal();
+}
+$("conversation-map").onclick = showMap;
+$("close-map").onclick = () => $("map-dialog").close();
+function canvasView(source) {
+  $("canvas-source").hidden = !source;
+  $("canvas-stage").hidden = source;
+  $("show-source").setAttribute("aria-pressed", String(source));
+  $("show-preview").setAttribute("aria-pressed", String(!source));
+}
+function runCanvas() {
+  const code = $("canvas-source").value;
+  if (new TextEncoder().encode(code).length > 60000)
+    return toast("Canvas supports up to 60 KB of source code.");
+  $("canvas-payload").value = code;
+  $("canvas-transport").submit();
+  canvasView(false);
+  $("canvas-status").textContent =
+    "Preview refreshed · external resources blocked";
+  try {
+    localStorage.setItem("geocentric.canvas.v1", code);
+  } catch {}
+}
+function canvasFocusMode() {
+  const modal = !$("workshop").hidden && innerWidth <= 1100;
+  $("main").inert = modal;
+  $("sidebar").inert = modal;
+  $("workshop").setAttribute("role", modal ? "dialog" : "region");
+  if (modal) $("workshop").setAttribute("aria-modal", "true");
+  else $("workshop").removeAttribute("aria-modal");
+}
+window.addEventListener("resize", canvasFocusMode);
+document.addEventListener("keydown", (e) => {
+  if (
+    e.key === "Escape" &&
+    !$("workshop").hidden &&
+    !document.querySelector("dialog[open]")
+  )
+    $("close-workshop").click();
+});
+function openCanvas(code) {
+  $("canvas-source").value = code;
+  $("workshop").hidden = false;
+  document.body.classList.add("canvas-open");
+  canvasFocusMode();
+  runCanvas();
+  $("close-workshop").focus({ preventScroll: true });
+}
+$("close-workshop").onclick = () => {
+  $("workshop").hidden = true;
+  document.body.classList.remove("canvas-open");
+  canvasFocusMode();
+  try {
+    localStorage.setItem("geocentric.canvas.v1", $("canvas-source").value);
+  } catch {}
+  $("canvas-frame").src = "about:blank"; // Stop timers and scripts when the preview closes.
+  $("open-workshop").focus({ preventScroll: true });
+};
+$("show-source").onclick = () => canvasView(true);
+$("show-preview").onclick = () => canvasView(false);
+$("run-canvas").onclick = runCanvas;
+$("canvas-source").addEventListener("input", () => {
+  $("canvas-status").textContent =
+    "Unsaved changes · run to refresh the preview";
+});
+$("canvas-source").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    runCanvas();
+  }
+});
+$("download-canvas").onclick = () => {
+  const blob = new Blob([$("canvas-source").value], { type: "text/html" }),
+    url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "geocentric-canvas.html";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+const canvasStarter = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A little room to think</title>
+<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#faf8f5;color:#27251e;font:16px system-ui;padding:32px}main{max-width:420px;width:100%}small{letter-spacing:.14em;font-size:10px;color:#72706b}h1{font-size:38px;font-weight:500;letter-spacing:-.04em;margin:22px 0}p{line-height:1.8;color:#72706b}button{background:#30372b;color:#faf8f5;border:0;border-radius:8px;padding:12px 18px;font:inherit;cursor:pointer}#idea{min-height:86px;border-left:2px solid #9bad89;padding-left:18px;margin:28px 0}</style>
+<main><small>YOUR LOCAL CREATIVE SPACE</small><h1>A little room to think.</h1><p>This is a working canvas. Edit the code, try an idea, and make something your own.</p><p id="idea">What would you make if you started small?</p><button id="next">Give me a spark ↗</button></main>
+<script>const ideas=['What would you make if you started small?','Explain a complicated idea with one simple interaction.','Build a tiny tool that makes tomorrow a little easier.','Turn your notes into a place you want to revisit.'];let i=0;document.getElementById('next').onclick=()=>{document.getElementById('idea').textContent=ideas[++i%ideas.length]};<\/script></html>`;
+$("open-workshop").onclick = () => {
+  let saved;
+  try {
+    saved = localStorage.getItem("geocentric.canvas.v1");
+  } catch {}
+  openCanvas(saved || canvasStarter);
+};
 const shortcut = document.querySelector(".shortcut");
 shortcut.textContent = /Mac|iPhone|iPad/.test(navigator.platform)
   ? "⌘ K"

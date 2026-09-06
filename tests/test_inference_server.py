@@ -221,3 +221,39 @@ def test_tokenizer_search_still_uses_extra_directories(tmp_path):
     extra = tmp_path / 'assets'; extra.mkdir()
     (extra / 'tokenizer.json').write_text('{}')
     assert find_tokenizer_path(model_dir, extra_dirs=[extra]) == extra / 'tokenizer.json'
+
+
+def test_preview_response_is_sandboxed_and_does_not_call_model(server):
+    from urllib.parse import urlencode
+    url, engine = server
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Preview must not invoke inference')
+    engine.stream = forbidden
+    code = '<h1>Canvas</h1><script>document.body.dataset.test="yes"</script>'
+    data = urlencode({'code': code}).encode()
+    req = urllib.request.Request(url + '/api/preview', data=data,
+        headers={'Content-Type': 'application/x-www-form-urlencoded', 'Origin': url})
+    with urllib.request.urlopen(req) as response:
+        policy = response.headers['Content-Security-Policy']
+        assert 'sandbox allow-scripts;' in policy
+        assert 'allow-same-origin' not in policy
+        assert "default-src 'none'" in policy
+        assert "connect-src 'none'" in policy
+        assert "form-action 'none'" in policy
+        assert response.read().decode() == code
+    with request(url + '/') as response:
+        assert "script-src 'self'" in response.headers['Content-Security-Policy']
+        assert 'unsafe-inline' not in response.headers['Content-Security-Policy']
+
+
+def test_preview_rejects_invalid_and_oversized_sources(server):
+    from urllib.parse import urlencode
+    for values in ({'code': 'x' * 60001}, {'other': 'x'}, [('code', 'a'), ('code', 'b')]):
+        req = urllib.request.Request(server[0] + '/api/preview', data=urlencode(values).encode(),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req)
+        assert exc.value.code == 400
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        request(server[0] + '/api/preview', {'code': 'x'}, 'http://other.invalid')
+    assert exc.value.code == 403
