@@ -31,7 +31,7 @@ def make_model():
 
 
 @cuda
-@pytest.mark.parametrize("kind", ["adamw", "ring", "factored"])
+@pytest.mark.parametrize("kind", ["adamw", "ring", "factored", "balanced"])
 @pytest.mark.parametrize("checkpointing", [False, True])
 def test_cuda_fp16_growth_fold_scaling_and_resume(kind, checkpointing):
     torch.manual_seed(7)
@@ -40,7 +40,7 @@ def test_cuda_fp16_growth_fold_scaling_and_resume(kind, checkpointing):
         block.gradient_checkpointing = checkpointing
     scheduler = EpicycleScheduler(EpicycleConfig(enabled=True, horizon_start=16), model, 10, 64)
     optimizer = (build_optimizer(model, 1e-3, quiet=True) if kind == "adamw" else
-                 RingAdamW(model.parameters(), lr=1e-3, rings=2, dwell=2, factored=kind == "factored"))
+                 RingAdamW(model.parameters(), lr=1e-3, rings=2, dwell=2, factored=kind in {"factored", "balanced"}, partitioned=kind == "balanced"))
     scaler = torch.amp.GradScaler("cuda", init_scale=128)
     x = torch.randint(0, 256, (2, 64), device="cuda")
     y = torch.roll(x, -1, 1)

@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("--no_resume", action="store_true")
     pre.add_argument("--reprepare", action="store_true", help="Re-tokenize the corpus even if shards exist")
     pre.add_argument("--epicycle", default="off",
-                     choices=["off", "speed", "quality", "memory", "full", "capacity"],
+                     choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced"],
                      help="EPICYCLE training gears. speed = elastic depth + context; "
                           "quality = adds token selection; memory = adds rotating optimizer "
                           "state so more parameters fit; full = everything.")
@@ -151,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--max_steps", type=int, default=0)
     pl.add_argument("--doc_sep", default=None)
     pl.add_argument("--epicycle", default="off",
-                    choices=["off", "speed", "quality", "memory", "full", "capacity"])
+                    choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced"])
     _add_common_training_flags(pl)
     _add_loss_guard_flags(pl)
     _add_watermark_flags(pl)
@@ -233,6 +233,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     ch = sub.add_parser("chat", aliases=["try"], help="Test a checkpoint interactively")
     ch.add_argument("--model_dir", default="runs/geocentric")
+    ch.add_argument("--terminal", action="store_true", help="Use the terminal instead of the web interface for try")
+    ch.add_argument("--web", action="store_true", help="Launch the web interface with chat too")
+    ch.add_argument("--host", default="0.0.0.0", help="Server bind address (default: local network)")
+    ch.add_argument("--port", type=int, default=8000)
+    ch.add_argument("--no_browser", action="store_true")
+    ch.add_argument("--dtype", default="auto", choices=["auto", "fp32", "fp16", "bf16"])
+    ch.add_argument("--checkpoint", default=None)
     ch.add_argument("--max_new_tokens", type=int, default=256)
     ch.add_argument("--temperature", type=float, default=0.8)
     ch.add_argument("--top_k", type=int, default=50)
@@ -451,6 +458,8 @@ def _run_chat(args: argparse.Namespace) -> None:
     of question. So a base model is driven as a text continuer and only an
     instruction-tuned one gets the chat framing.
     """
+    import torch
+    from geocentric.device import resolve_dtype
     from geocentric.chat import DEFAULT_SYSTEM
     from geocentric.checkpoint import load_model_and_tokenizer
     from geocentric.generate import build_chat_prompt, stream_text
@@ -462,7 +471,11 @@ def _run_chat(args: argparse.Namespace) -> None:
     except ImportError:
         pass
 
-    model, tokenizer, stage = load_model_and_tokenizer(args.model_dir, with_stage=True)
+    model, tokenizer, stage = load_model_and_tokenizer(args.model_dir, checkpoint_name=args.checkpoint, with_stage=True)
+    device = next(model.parameters()).device
+    dtype = resolve_dtype(device, args.dtype)
+    if device.type == "cpu" and args.dtype == "auto":
+        dtype = torch.float32
     mode = args.mode if args.mode != "auto" else ("chat" if stage in ("sft", "vision") else "base")
     images, image_prefix = _load_chat_image(model, args.image)
 
@@ -538,9 +551,10 @@ def _run_chat(args: argparse.Namespace) -> None:
         # Passed on every turn, not just the first: the placeholders stay in the
         # rendered history, so the splice has to keep having something to put there.
         try:
-            for piece in stream_text(model, tokenizer, prompt, images=images, **sampling):
-                chunks.append(piece)
-                print(piece, end="", flush=True)
+            with torch.autocast(device.type, dtype=dtype, enabled=dtype != torch.float32):
+                for piece in stream_text(model, tokenizer, prompt, images=images, **sampling):
+                    chunks.append(piece)
+                    print(piece, end="", flush=True)
         except KeyboardInterrupt:
             print("  [interrupted]", end="")
         print("\n")
@@ -843,7 +857,11 @@ def main() -> None:
     elif args.command == "detect":
         _run_detect(args)
     elif args.command in ("chat", "try"):
-        _run_chat(args)
+        if not args.terminal and (args.command == "try" or args.web):
+            from geocentric.web_server import serve
+            serve(args)
+        else:
+            _run_chat(args)
     elif args.command == "generate":
         _run_generate(args)
     elif args.command == "plan":

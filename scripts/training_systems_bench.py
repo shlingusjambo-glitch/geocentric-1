@@ -52,8 +52,8 @@ def run(args, name, device):
     config = EpicycleConfig(enabled=True, deferent=False, horizon_start=args.context // 2,
                             equant=False)
     sched = EpicycleScheduler(config, model, 100, args.context)
-    optimizer = (RingAdamW(model.parameters(), rings=4, dwell=2, factored=True)
-                 if name == "capacity" else build_optimizer(model, 6e-4,
+    optimizer = (RingAdamW(model.parameters(), rings=4, dwell=2, factored=True, partitioned=name == "balanced")
+                 if name in {"capacity", "balanced"} else build_optimizer(model, 6e-4,
                                                             device_type=device.type, quiet=True))
     dtype = resolve_dtype(device, args.dtype)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and dtype == torch.float16)
@@ -67,7 +67,7 @@ def run(args, name, device):
         if index == args.warmup and device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
         x, y = tokens[:, :-1].to(device), tokens[:, 1:].to(device)
-        if name in {"fold", "fold_dense", "capacity"}:
+        if name in {"fold", "fold_dense", "capacity", "balanced"}:
             x, y = sched.prepare_batch(x, y, args.context // 2)
         optimizer.zero_grad(set_to_none=True)
         sync(device)
@@ -113,8 +113,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"], default="auto")
     p.add_argument("--dtype", default="auto", choices=["auto", "fp32", "fp16", "bf16"])
-    p.add_argument("--arms", nargs="+", default=["dense", "chunked", "fold_dense", "fold", "capacity"],
-                   choices=["dense", "chunked", "fold_dense", "fold", "capacity"])
+    p.add_argument("--arms", nargs="+", default=["dense", "chunked", "fold_dense", "fold", "capacity", "balanced"],
+                   choices=["dense", "chunked", "fold_dense", "fold", "capacity", "balanced"])
     p.add_argument("--steps", type=int, default=12)
     p.add_argument("--warmup", type=int, default=3)
     p.add_argument("--seed", type=int, default=2026)

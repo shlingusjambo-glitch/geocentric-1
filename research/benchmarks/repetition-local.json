@@ -1,0 +1,59 @@
+{
+  "checkpoint": "geocentric_m4_16m_pretrained_best.pt",
+  "model_dir": "runs/m4-120min",
+  "stage": "pretrained",
+  "prompt": "The purpose of learning is",
+  "device": "mps",
+  "dtype": "torch.bfloat16",
+  "cached_max_logit_error": 0.0625,
+  "cached_top1_equal": true,
+  "runs": [
+    {
+      "temperature": 0.0,
+      "repetition_penalty": 1.0,
+      "text": " to be able to be able to use the same time.\nThe first step is to use the same time to make the same time.\nThe first step is to use the same time to be the same as the same as the same as the same as the same as the same as the same as the same as",
+      "has_sustained_loop": true,
+      "stats": {
+        "prompt_tokens": 5,
+        "generated_tokens": 64,
+        "truncated_prompt_tokens": 0,
+        "seconds": 0.38310999999999984,
+        "tokens_per_second": 167.05384876406262,
+        "first_token_seconds": 0.007362083000000075,
+        "finish_reason": "length"
+      }
+    },
+    {
+      "temperature": 0.8,
+      "repetition_penalty": 1.0,
+      "text": " to provide the knowledge of the real-term relationship between the real person and the knowledge of this problem.",
+      "has_sustained_loop": false,
+      "stats": {
+        "prompt_tokens": 5,
+        "generated_tokens": 21,
+        "truncated_prompt_tokens": 0,
+        "seconds": 0.29017929200000037,
+        "tokens_per_second": 72.36905106240307,
+        "first_token_seconds": 0.07891708300000033,
+        "finish_reason": "stop"
+      }
+    },
+    {
+      "temperature": 0.8,
+      "repetition_penalty": 1.25,
+      "text": " to provide the knowledge. This causes the importance and information that we should be able to learn more in this article.\nThe authors are usually described as a way on an effort: \"I have always been used for our own experiences, and those who will become notified by others.\" In fact, I don\u2019t",
+      "has_sustained_loop": false,
+      "stats": {
+        "prompt_tokens": 5,
+        "generated_tokens": 64,
+        "truncated_prompt_tokens": 0,
+        "seconds": 1.059653167,
+        "tokens_per_second": 60.39712048536727,
+        "first_token_seconds": 0.016911583000000174,
+        "finish_reason": "length"
+      }
+    }
+  ],
+  "interpretation": "A sampled loop alone does not diagnose training collapse. Compare held-out loss, corpus duplication and base versus chat formatting. This probe never changes the checkpoint.",
+  "step": 400
+}

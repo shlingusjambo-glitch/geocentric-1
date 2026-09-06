@@ -44,7 +44,7 @@ Context length defaults to 1024 tokens (2048 at 1B+), and the vocabulary to 32,0
 | `sft` | Instruction fine-tune a pretrained checkpoint |
 | `pipeline` | `pretrain` then `sft` in one command |
 | `train-vision` | Attach a vision tower and train on image/text pairs |
-| `chat` (alias `try`) | Test a checkpoint interactively (`--image` for multimodal) |
+| `try` / `chat` | LAN web chat / terminal chat (`--image` in terminal) |
 | `generate` | One-shot completion |
 | `bench` (alias `parallax`) | Run the PARALLAX suite, write a scored Markdown report |
 | `release` | Package a checkpoint for publication, with a model card |
@@ -347,6 +347,16 @@ card claims, and a `manifest.json` with a SHA-256 for each file.
 geocentric try --model_dir runs/geocentric-120m
 ```
 
+`try` starts the bundled Geocentric web app on port 8000, prints localhost and LAN/Wi-Fi URLs, and opens your browser. Connect from another device on the same network using the printed LAN URL. No Node installation or cloud service is needed. The app includes streaming, stop, regenerate, editable turns, searchable browser-local history, code copying, export, settings, and your Geocentric artwork.
+
+```bash
+geocentric try --model_dir runs/geocentric-120m --port 8000 --no_browser
+geocentric try --model_dir runs/geocentric-120m --host 127.0.0.1
+geocentric try --model_dir runs/geocentric-120m --terminal
+```
+
+The default bind is `0.0.0.0`: reachable LAN users can use the model without a login. Use `--host 127.0.0.1` for access only on this computer. The server handles one generation at a time and returns a busy response for additional requests. Browser history is separate on each device. `--checkpoint FILE.pt` selects a checkpoint; `--dtype auto` chooses the device precision. Web input is currently text; use `chat --image` for vision.
+
 The mode follows the checkpoint, because the two kinds of model want different
 input:
 
@@ -356,7 +366,7 @@ input:
   model rather than the wrong question.
 - **instruction tuned** — chat turns with a system prompt, stopping at `<|eot|>`.
 
-Force either with `--mode base` / `--mode chat`. In-session commands: `/reset`,
+Force either in web settings or with `--mode base` / `--mode chat`. Terminal in-session commands: `/reset`,
 `/system <text>`, `/exit`.
 
 ## Data formats
@@ -474,3 +484,18 @@ old behavior, and `<|image|>` is reserved in newly trained tokenizers only — a
 tokenizer without it has the token added and the embedding matrix grown by one row
 when a vision tower is attached, so no retrain is needed. `tests/test_backward_compat.py`
 builds checkpoints in the old shape by hand and asserts all of it.
+
+## Balanced optimizer and inference diagnostics
+
+`--epicycle balanced` is an experimental, opt-in extension of `capacity`. It partitions each tensor across momentum rings, so a dominant embedding no longer determines the largest ring. Factored second moments remain unchanged. This reduces optimizer state; it does not reduce model weights, gradients, or guarantee the same convergence. Existing presets and checkpoint parameter shapes are unchanged. Continue existing training with its original optimizer configuration; switching to `balanced` is a new optimizer experiment, not a transparent resume.
+
+Inference now reuses bounded KV storage and applies top-p/min-p sampling in the top-k candidate space. Exact-k selection can differ at tied cutoff logits. The web client reports a repetition stop after six consecutive copies of a 1–4 token cycle. This serving guard does not establish that a training run diverged. Base models are continuers, and pretraining percentage alone does not diagnose repeated words.
+
+Run a read-only probe on the affected checkpoint:
+
+```bash
+python scripts/repetition_diagnostic.py --model_dir runs/geocentric-120m --device cuda
+python scripts/inference_bench.py --device cuda
+```
+
+See [this pass’s results](research/benchmarks/INFERENCE_AND_BALANCED.md) for measurements and limitations.

@@ -61,7 +61,8 @@ def generate_text(
 
     ids = tokenizer.encode(prompt).ids
     # Keep the most recent context: the newest turn matters more than the oldest.
-    ids = ids[-(model.config.block_size - max_new_tokens) :] or ids[-model.config.block_size :]
+    max_new_tokens = min(max(0, max_new_tokens), model.config.block_size - 1)
+    ids = ids[-(model.config.block_size - max_new_tokens):] or [token_id(tokenizer, "<eos>")]
     input_ids = torch.tensor([ids], dtype=torch.long, device=device)
 
     stops = _stop_ids(tokenizer)
@@ -98,68 +99,86 @@ def stream_text(
     device: Optional[torch.device] = None,
     watermark: Optional[WatermarkConfig] = None,
     images: Optional[torch.Tensor] = None,
+    cancel_event=None,
+    stats: Optional[dict] = None,
+    loop_guard: bool = False,
 ) -> Iterator[str]:
-    """Yield decoded text incrementally, reusing the KV cache between tokens."""
+    """Stream with bounded KV/history allocations and cooperative cancellation."""
+    import time
     from geocentric.model import KVCache
+    from geocentric.sampling import sample_token
 
     device = device or next(model.parameters()).device
     model.eval()
-
-    ids = tokenizer.encode(prompt).ids[-model.config.block_size :]
+    limit = min(max(0, max_new_tokens), model.config.block_size - 1)
+    if limit <= 0:
+        return
+    encoded = tokenizer.encode(prompt).ids
+    ids = encoded[-(model.config.block_size - limit):]
+    if not ids:
+        ids = [token_id(tokenizer, "<eos>")]
+    if images is not None and len(ids) != len(encoded):
+        raise ValueError("Image prompt is too long; shorten the conversation or output limit")
     stops = set(_stop_ids(tokenizer))
-    caches = [KVCache() for _ in model.blocks]
-
+    caches = [KVCache(max_length=len(ids) + limit) for _ in model.blocks]
     processor = make_processor(model, watermark)
-    cur = torch.tensor([ids], dtype=torch.long, device=device)
+    history = torch.empty((1, len(ids) + limit), dtype=torch.long, device=device)
+    history[:, :len(ids)] = torch.tensor([ids], dtype=torch.long, device=device)
+    cur = history[:, :len(ids)]
     offset = 0
     produced: List[int] = []
     emitted = ""
-
-    for _ in range(max_new_tokens):
-        if offset + cur.size(1) > model.config.block_size:
+    started = time.perf_counter()
+    reason = "length"
+    first_token_time = None
+    for _ in range(limit):
+        if cancel_event is not None and cancel_event.is_set():
+            reason = "cancelled"
             break
         logits, _ = model(cur, caches=caches, position_offset=offset,
                           images=images if offset == 0 else None)
         offset += cur.size(1)
-        logits = logits[:, -1, :].float()
-
-        history = torch.tensor([ids + produced], device=device)[:, -128:]
-        if repetition_penalty != 1.0:
-            score = torch.gather(logits, 1, history)
-            score = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
-            logits.scatter_(1, history, score)
-
-        if temperature > 0:
-            logits = logits / max(temperature, 1e-5)
-        if processor is not None:
-            # The green list is keyed on the tokens actually in the stream, prompt
-            # included — the same view the detector reconstructs from the text.
-            processor(logits, torch.tensor([ids + produced], device=device))
-
-        if temperature <= 0:
-            next_id = int(torch.argmax(logits, dim=-1))
-        else:
-            if top_k > 0:
-                values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits = logits.masked_fill(logits < values[:, [-1]], -float("inf"))
-            probs = torch.softmax(logits, dim=-1)
-            if min_p > 0:
-                probs = torch.where(probs < min_p * probs.max(), torch.zeros_like(probs), probs)
-            if 0 < top_p < 1:
-                sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
-                keep = (sorted_probs.cumsum(-1) - sorted_probs) < top_p
-                keep[:, 0] = True
-                probs = torch.zeros_like(probs).scatter_(1, sorted_idx, sorted_probs * keep)
-            probs = probs / probs.sum().clamp_min(1e-9)
-            next_id = int(torch.multinomial(probs, num_samples=1))
-
-        if next_id in stops:
+        next_id = sample_token(logits[:, -1, :], history[:, :len(ids) + len(produced)],
+                               temperature, top_k, top_p, min_p, repetition_penalty,
+                               processor=processor)
+        token = int(next_id.item())
+        if first_token_time is None:
+            first_token_time = time.perf_counter() - started
+        if token in stops:
+            reason = "stop"
             break
-        produced.append(next_id)
-        cur = torch.tensor([[next_id]], dtype=torch.long, device=device)
-
-        # Decode the whole run each time so multi-byte characters never split.
+        history[:, len(ids) + len(produced):len(ids) + len(produced) + 1] = next_id
+        produced.append(token)
+        cur = next_id
         text = tokenizer.decode(produced, skip_special_tokens=True)
-        if len(text) > len(emitted):
-            yield text[len(emitted) :]
+        # A byte-BPE token may end halfway through a Unicode character. Do not
+        # permanently emit the decoder's temporary replacement character.
+        if not text.endswith("\ufffd") and text.startswith(emitted) and len(text) > len(emitted):
+            yield text[len(emitted):]
             emitted = text
+        if loop_guard and repeated_tail(produced):
+            reason = "repetition"
+            break
+    text = tokenizer.decode(produced, skip_special_tokens=True)
+    if text.startswith(emitted) and len(text) > len(emitted):
+        yield text[len(emitted):]
+    if stats is not None:
+        elapsed = time.perf_counter() - started
+        stats.update(prompt_tokens=len(ids), generated_tokens=len(produced),
+                     truncated_prompt_tokens=max(0, len(encoded) - len(ids)),
+                     seconds=elapsed, tokens_per_second=len(produced) / max(elapsed, 1e-9),
+                     first_token_seconds=first_token_time, finish_reason=reason)
+
+
+def repeated_tail(tokens, repeats=6, max_period=4):
+    """Detect sustained exact token cycles, not ordinary repeated words elsewhere.
+
+    Six consecutive copies of a 1–4 token phrase trigger a visible stop reason.
+    This is a serving guard, not evidence that training divergence was diagnosed.
+    """
+    for width in range(1, max_period + 1):
+        if len(tokens) >= width * repeats:
+            pattern = tokens[-width:]
+            if tokens[-width * repeats:] == pattern * repeats:
+                return True
+    return False

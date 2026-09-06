@@ -1,0 +1,43 @@
+{
+  "args": {
+    "baseline": "3771334",
+    "device": "auto",
+    "tokens": 64,
+    "repeats": 5,
+    "output": "research/benchmarks/inference-m4.json"
+  },
+  "device": "mps",
+  "dtype": "torch.bfloat16",
+  "torch": "2.8.0",
+  "config": {
+    "vocab_size": 32000,
+    "block_size": 512,
+    "n_layer": 6,
+    "n_head": 6,
+    "n_kv_head": 2,
+    "n_embd": 384
+  },
+  "seconds": {
+    "baseline": [
+      0.8595807090000003,
+      0.8397070410000005,
+      0.8618280830000007,
+      0.9355027079999996,
+      0.8749442920000003
+    ],
+    "current": [
+      0.7054885420000003,
+      0.7266221660000003,
+      0.7279848749999989,
+      0.717351708999999,
+      0.7250472089999995
+    ]
+  },
+  "median_tokens_per_second": {
+    "baseline": 74.26075021507502,
+    "current": 88.27011428437902
+  },
+  "improvement_percent": 18.865099031089617,
+  "greedy_equal": true,
+  "caveat": "Random weights; timing evidence only, not model quality."
+}

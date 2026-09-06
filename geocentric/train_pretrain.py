@@ -122,7 +122,8 @@ def pretrain(
     if tokenizer_path:
         import shutil
 
-        shutil.copyfile(tokenizer_path, tok_out)
+        if Path(tokenizer_path).resolve() != tok_out.resolve():
+            shutil.copyfile(tokenizer_path, tok_out)
         tokenizer = load_tokenizer(tok_out)
     elif tok_out.exists():
         tokenizer = load_tokenizer(tok_out)

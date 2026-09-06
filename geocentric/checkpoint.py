@@ -67,6 +67,7 @@ def _find_checkpoint(model_dir: Path, checkpoint_name: Optional[str]) -> Path:
         candidate = model_dir / checkpoint_name
         if candidate.exists():
             return candidate
+        raise FileNotFoundError(f"Requested checkpoint not found: {candidate}")
     # Most-derived first: a vision checkpoint contains the SFT weights it was built on,
     # and an SFT checkpoint contains the pretrained ones.
     for pattern in ("*_vision_best.pt", "*_vision.pt", "*_sft_best.pt", "*_sft.pt",

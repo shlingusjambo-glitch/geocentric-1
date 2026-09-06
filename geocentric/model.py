@@ -100,18 +100,42 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
 
 
 class KVCache:
-    """Per-layer key/value cache so generation is O(1) per token instead of O(T)."""
+    """Per-layer reusable key/value storage; attention still grows with context."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_length: Optional[int] = None) -> None:
         self.k: Optional[torch.Tensor] = None
         self.v: Optional[torch.Tensor] = None
+        self.max_length = max_length
+        self._storage_k = self._storage_v = None
+        self._length = 0
 
     def append(self, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.max_length is not None and self.length + k.size(2) > self.max_length:
+            raise ValueError("KV cache capacity exceeded")
+        if not torch.is_grad_enabled():
+            end = self._length + k.size(2)
+            if self._storage_k is None or self._storage_k.size(2) < end:
+                capacity = self.max_length or max(end, 16 if self._storage_k is None
+                                                  else self._storage_k.size(2) * 2)
+                shape = (*k.shape[:2], capacity, k.size(3))
+                new_k, new_v = k.new_empty(shape), v.new_empty(shape)
+                if self._length:
+                    new_k[:, :, :self._length].copy_(self.k)
+                    new_v[:, :, :self._length].copy_(self.v)
+                self._storage_k, self._storage_v = new_k, new_v
+            self._storage_k[:, :, self._length:end].copy_(k)
+            self._storage_v[:, :, self._length:end].copy_(v)
+            self._length = end
+            self.k, self.v = self._storage_k[:, :, :end], self._storage_v[:, :, :end]
+            return self.k, self.v
+        # Preserve autograd behavior for callers differentiating cached forwards.
         if self.k is None:
             self.k, self.v = k, v
         else:
             self.k = torch.cat([self.k, k], dim=2)
             self.v = torch.cat([self.v, v], dim=2)
+        self._length = self.k.size(2)
+        self._storage_k = self._storage_v = None
         return self.k, self.v
 
     @property
@@ -383,7 +407,7 @@ class GeocentricGPT(nn.Module):
         images: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self.eval()
-        caches = [KVCache() for _ in self.blocks]
+        caches = [KVCache(max_length=self.config.block_size) for _ in self.blocks]
         prompt_len = input_ids.size(1)
         if prompt_len > self.config.block_size:
             input_ids = input_ids[:, -self.config.block_size :]
@@ -407,43 +431,11 @@ class GeocentricGPT(nn.Module):
             offset += cur.size(1)
             logits = logits[:, -1, :].float()
 
-            # Penalize only the recent window. Penalizing the entire prompt makes the
-            # model avoid the user's own words, which reads as evasive and off-topic.
-            if repetition_penalty != 1.0 and repetition_window > 0:
-                recent = generated[:, -repetition_window:]
-                score = torch.gather(logits, 1, recent)
-                score = torch.where(
-                    score > 0, score / repetition_penalty, score * repetition_penalty
-                )
-                logits.scatter_(1, recent, score)
-
-            if temperature > 0:
-                logits = logits / max(temperature, 1e-5)
-            # Applied after temperature so the watermark bias means the same thing
-            # at temp 0.3 and temp 1.2 — dividing it would silently weaken the mark.
-            if logits_processor is not None:
-                logits = logits_processor(logits, generated)
-
-            if temperature <= 0:
-                next_id = torch.argmax(logits, dim=-1, keepdim=True)
-            else:
-                if top_k > 0:
-                    values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits = logits.masked_fill(logits < values[:, [-1]], -float("inf"))
-                probs = F.softmax(logits, dim=-1)
-                if min_p > 0.0:
-                    threshold = min_p * probs.max(dim=-1, keepdim=True).values
-                    probs = torch.where(probs < threshold, torch.zeros_like(probs), probs)
-                if 0.0 < top_p < 1.0:
-                    sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
-                    cumulative = sorted_probs.cumsum(dim=-1)
-                    keep = cumulative - sorted_probs < top_p
-                    keep[:, 0] = True
-                    sorted_probs = sorted_probs * keep
-                    probs = torch.zeros_like(probs).scatter_(1, sorted_idx, sorted_probs)
-                total = probs.sum(dim=-1, keepdim=True)
-                probs = torch.where(total > 0, probs / total, torch.ones_like(probs) / probs.size(-1))
-                next_id = torch.multinomial(probs, num_samples=1)
+            from geocentric.sampling import sample_token
+            next_id = sample_token(
+                logits, generated, temperature, top_k, top_p, min_p,
+                repetition_penalty, repetition_window, logits_processor,
+            )
 
             generated = torch.cat([generated, next_id], dim=1)
             cur = next_id

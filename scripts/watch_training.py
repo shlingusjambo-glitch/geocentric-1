@@ -25,6 +25,17 @@ BLOCKS = "▁▂▃▄▅▆▇█"
 
 TRAINER_COMMANDS = {"pretrain", "sft", "pipeline"}
 
+HAVE_PROC = Path("/proc").is_dir()
+
+
+def _ps(fmt: str, pid: int | None = None) -> str:
+    """One `ps` field, for platforms without /proc (macOS, BSD)."""
+    argv = ["ps", "-o", fmt] + (["-p", str(pid)] if pid is not None else ["-ax"])
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
 
 def find_trainer(run_dir: Path) -> int | None:
     """Locate the training process driving this run directory.
@@ -44,15 +55,24 @@ def find_trainer(run_dir: Path) -> int | None:
             return pid
 
     me = os.getpid()
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit() or int(proc.name) == me:
+    if HAVE_PROC:
+        pids = [p.name for p in Path("/proc").iterdir()]
+    else:
+        pids = _ps("pid=").split()
+    for name in pids:
+        if not name.isdigit() or int(name) == me:
             continue
-        if _is_trainer(int(proc.name), run_dir):
-            return int(proc.name)
+        if _is_trainer(int(name), run_dir):
+            return int(name)
     return None
 
 
 def _argv(pid: int) -> list[str]:
+    if not HAVE_PROC:
+        # ponytail: ps joins argv with spaces, so an argument containing a space
+        # splits into two elements. Harmless for the exact matches below, which
+        # are all single words; revisit if a matched argument ever grows a space.
+        return _ps("command=", pid).split()
     try:
         raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
     except (OSError, PermissionError):
@@ -84,6 +104,8 @@ def process_state(pid: int | None) -> str:
     """
     if pid is None:
         return ""
+    if not HAVE_PROC:
+        return _ps("state=", pid).strip()[:1]
     try:
         stat = (Path("/proc") / str(pid) / "stat").read_text()
         return stat.rsplit(")", 1)[1].split()[0]

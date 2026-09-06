@@ -86,9 +86,10 @@ def sft(
     tokenizer = load_tokenizer(find_tokenizer_path(src, extra_dirs=[out]))
     pad_id = token_id(tokenizer, "<pad>")
 
+    preferred = pretrained_checkpoint_name(modelver, best=True)
     model = load_checkpoint(
         src, device=device, dtype=torch.float32,
-        checkpoint_name=pretrained_checkpoint_name(modelver, best=True),
+        checkpoint_name=preferred if (src / preferred).is_file() else None,
     )
     model.loss_chunk_size = loss_chunk_size
     if drop_watermark:

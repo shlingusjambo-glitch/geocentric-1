@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="Chat privately with your locally trained Geocentric model."
+    />
+    <title>Geocentric</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <aside id="sidebar" aria-label="Chat sidebar">
+      <div class="side-top">
+        <a class="brand" href="/" aria-label="Geocentric home"
+          ><span
+            class="company-logo"
+            role="img"
+            aria-label="Geocentric"
+          ></span></a
+        ><button
+          class="icon-button"
+          id="collapse"
+          aria-label="Close sidebar"
+          data-icon="panel"
+        ></button>
+      </div>
+      <button class="nav-button" id="new-chat">
+        <span data-icon="compose"></span>New chat<span class="shortcut"
+          >⌘ K</span
+        >
+      </button>
+      <button class="nav-button" id="search-button">
+        <span data-icon="search"></span>Search chats
+      </button>
+      <input
+        id="search"
+        type="search"
+        placeholder="Search conversations"
+        aria-label="Search conversations"
+        hidden
+      />
+      <div class="history-label">Your chats</div>
+      <nav id="history" aria-label="Conversation history"></nav>
+      <button class="profile" id="profile">
+        <img
+          class="avatar mascot"
+          src="/mascot.png"
+          alt="Geocentric mascot"
+        /><span><strong>Geocentric</strong><small>Local workspace</small></span
+        ><span data-icon="settings"></span>
+      </button>
+    </aside>
+    <div id="overlay" hidden></div>
+    <main id="main">
+      <header>
+        <div class="header-left">
+          <button
+            class="icon-button"
+            id="expand"
+            aria-label="Open sidebar"
+            data-icon="panel"
+          ></button
+          ><button id="model-menu" class="model-button">
+            Geocentric <span data-icon="chevron"></span></button
+          ><span id="mode-badge" class="badge"></span>
+        </div>
+        <button
+          class="icon-button"
+          id="settings-button"
+          aria-label="Settings"
+          data-icon="sliders"
+        ></button>
+      </header>
+      <div id="connection" role="status" hidden></div>
+      <section id="conversation" aria-label="Conversation" tabindex="0">
+        <div id="messages"></div>
+      </section>
+      <section id="welcome">
+        <img
+          class="welcome-mascot mascot"
+          src="/mascot.png"
+          alt="Geocentric mascot"
+        />
+        <h1>What can I help with?</h1>
+      </section>
+      <div id="composer-area">
+        <div id="error" role="alert" hidden></div>
+        <form id="composer">
+          <textarea
+            id="prompt"
+            rows="1"
+            placeholder="Ask anything"
+            aria-label="Message Geocentric"
+            required
+          ></textarea>
+          <div class="composer-tools">
+            <button type="button" id="composer-settings" class="tool-button">
+              <span data-icon="sliders"></span>Tools</button
+            ><span id="status" aria-live="polite"></span
+            ><button
+              type="submit"
+              id="send"
+              class="send-button"
+              aria-label="Send message"
+              data-icon="arrow"
+            ></button
+            ><button
+              type="button"
+              id="stop"
+              class="send-button"
+              aria-label="Stop generating"
+              hidden
+              data-icon="stop"
+            ></button>
+          </div>
+        </form>
+        <p class="footnote">
+          Geocentric can make mistakes. Check important information.
+        </p>
+      </div>
+    </main>
+    <dialog id="settings">
+      <div class="dialog-head">
+        <h2>Settings</h2>
+        <button
+          class="icon-button"
+          id="close-settings"
+          aria-label="Close settings"
+          data-icon="close"
+        ></button>
+      </div>
+      <div id="model-details"></div>
+      <label
+        >Appearance<select id="theme">
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+          <option value="system">System</option>
+        </select></label
+      >
+      <label
+        >Conversation mode<select id="mode">
+          <option value="auto">Automatic</option>
+          <option value="chat">Chat</option>
+          <option value="base">Text continuation</option>
+        </select></label
+      >
+      <p class="setting-help">
+        Automatic uses text continuation for a base model and chat formatting
+        for instruction-tuned models.
+      </p>
+      <label
+        >Temperature<input
+          id="temperature"
+          type="number"
+          min="0"
+          max="2"
+          step="0.05"
+          value="0.8"
+      /></label>
+      <label
+        >Maximum new tokens<input
+          id="max_new_tokens"
+          type="number"
+          min="1"
+          max="4096"
+          step="1"
+          value="256"
+      /></label>
+      <label
+        >Repetition penalty<input
+          id="repetition_penalty"
+          type="number"
+          min="1"
+          max="2"
+          step="0.05"
+          value="1.25"
+      /></label>
+      <label class="stacked"
+        >System instructions<textarea
+          id="system"
+          rows="3"
+          placeholder="You are a helpful assistant."
+        ></textarea>
+      </label>
+      <p class="setting-help">
+        Chats are saved only in this browser. Model inference runs on the
+        computer serving this page.
+      </p>
+      <div class="dialog-actions">
+        <button id="export-chat">Export chat</button
+        ><button id="save-settings" class="primary">Done</button>
+      </div>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+  </body>
+</html>

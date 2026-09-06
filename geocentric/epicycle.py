@@ -40,6 +40,7 @@ class EpicycleConfig:
     armillary_rings: int = 4
     armillary_dwell: int = 200    # steps a ring stays hot before the next takes over
     armillary_factored: bool = False  # experimental row/column second moments
+    armillary_partitioned: bool = False  # opt-in: split tensors across momentum rings
 
     def __post_init__(self):
         if not 0 < self.deferent_start <= 1:
@@ -80,7 +81,10 @@ class EpicycleConfig:
             return cls(enabled=True, deferent=True, horizon=True, equant=True, armillary=True)
         if name == "capacity":
             return cls(enabled=True, equant=False, armillary=True, armillary_factored=True)
-        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity.")
+        if name == "balanced":
+            return cls(enabled=True, equant=False, armillary=True, armillary_factored=True,
+                       armillary_partitioned=True)
+        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity, balanced.")
 
 
 class EpicycleScheduler:
@@ -302,6 +306,7 @@ class RingAdamW(Optimizer):
         rings: int = 4,
         dwell: int = 200,
         factored: bool = False,
+        partitioned: bool = False,
     ) -> None:
         if rings < 1:
             raise ValueError(f"rings must be at least 1, got {rings}")
@@ -313,6 +318,7 @@ class RingAdamW(Optimizer):
         self.rings = rings
         self.dwell = dwell
         self.factored = factored
+        self.partitioned = partitioned
         self._global_step = 0
         self._assign_rings()
 
@@ -331,6 +337,9 @@ class RingAdamW(Optimizer):
             self.state[p]["ring"] = r
             load[r] += p.numel()
         self.ring_load = load
+        if self.partitioned:
+            self.ring_load = [sum(p.numel() * (r + 1) // self.rings - p.numel() * r // self.rings
+                                  for p in tensors) for r in range(self.rings)]
 
     @property
     def hot_ring(self) -> int:
@@ -348,13 +357,14 @@ class RingAdamW(Optimizer):
     def state_dict(self):
         result = super().state_dict()
         result["armillary"] = dict(global_step=self._global_step, rings=self.rings,
-                                   dwell=self.dwell, factored=self.factored)
+                                   dwell=self.dwell, factored=self.factored, partitioned=self.partitioned)
         return result
 
     def load_state_dict(self, state_dict):
         meta = state_dict.get("armillary", {})
         if meta and (meta["rings"] != self.rings or meta["dwell"] != self.dwell
-                     or meta.get("factored", False) != self.factored):
+                     or meta.get("factored", False) != self.factored
+                     or meta.get("partitioned", False) != self.partitioned):
             raise ValueError("ARMILLARY configuration differs from the saved optimizer")
         # Optimizer.load_state_dict casts floating state to parameter dtype. Restore
         # deliberate storage dtypes afterwards, or resume silently doubles v memory.
@@ -379,7 +389,8 @@ class RingAdamW(Optimizer):
         # Free the entire old ring BEFORE allocating any of the new one, including
         # parameters with no gradient. Interleaved freeing can transiently hold two.
         for state in self.state.values():
-            if state.get("ring") != hot:
+            resident = state.get("m_ring") if self.partitioned else state.get("ring")
+            if resident != hot:
                 state.pop("m", None)
                 state["mt"] = 0
         for group in self.param_groups:
@@ -424,7 +435,21 @@ class RingAdamW(Optimizer):
                 v.div_(1 - beta2 ** state["t"])
                 denom = v.sqrt_().add_(eps)
 
-                if state["ring"] == hot:
+                if self.partitioned:
+                    start = p.numel() * hot // self.rings
+                    end = p.numel() * (hot + 1) // self.rings
+                    update = (grad / denom).contiguous()
+                    if end > start:
+                        if "m" not in state:
+                            state["m"] = torch.zeros(end - start, device=p.device, dtype=torch.float32)
+                            state["mt"] = 0
+                            state["m_ring"] = hot
+                        m = state["m"]
+                        m.mul_(beta1).add_(grad.reshape(-1)[start:end], alpha=1 - beta1)
+                        state["mt"] += 1
+                        update.reshape(-1)[start:end].copy_(
+                            (m / (1 - beta1 ** state["mt"])).div_(denom.reshape(-1)[start:end]))
+                elif state["ring"] == hot:
                     if "m" not in state:
                         state["m"] = torch.zeros_like(p, dtype=torch.float32)
                         state["mt"] = 0
@@ -469,6 +494,7 @@ def build_epicycle_optimizer(
          {"params": no_decay, "weight_decay": 0.0}],
         lr=learning_rate, betas=betas, rings=config.armillary_rings, dwell=config.armillary_dwell,
         factored=config.armillary_factored,
+        partitioned=config.armillary_partitioned,
     )
     if not quiet:
         n = sum(p.numel() for p in decay) + sum(p.numel() for p in no_decay)
