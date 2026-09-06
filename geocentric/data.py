@@ -134,6 +134,20 @@ def iter_documents(path: str | Path, doc_sep: Optional[str] = None) -> Iterator[
         raise ValueError(f"Unsupported data format: {file}")
 
 
+def iter_documents_with_source(
+    path: str | Path, doc_sep: Optional[str] = None
+) -> Iterator[Tuple[str, str]]:
+    """Like iter_documents, but also names the file each document came from.
+
+    prepare_corpus needs the boundaries between sources so it can hold out a slice
+    of every one of them rather than a slice of whichever sorts last.
+    """
+    root = _resolve_data_path(path)
+    for file in _iter_files(root):
+        for doc in iter_documents(file, doc_sep=doc_sep):
+            yield doc, str(file)
+
+
 def record_to_text(row: Mapping[str, object]) -> str:
     """Flatten a structured record into pretraining text."""
     messages = messages_from_record(row)
@@ -202,7 +216,23 @@ def prepare_corpus(
                 sink.write(np.asarray(ids, dtype=dtype).tobytes())
                 total_written += len(ids)
 
-        for doc in iter_documents(data_path, doc_sep=doc_sep):
+        # Record where each source file's tokens start and end, so the validation
+        # split can take a tail from every source rather than a tail of the whole
+        # stream. A single contiguous tail is whatever file happens to sort last:
+        # adding html.txt silently made the validation set 100% markup, so eval
+        # loss stopped measuring language at all.
+        spans: List[Tuple[int, int]] = []
+        span_start = 0
+        current_source = None
+
+        for doc, source in iter_documents_with_source(data_path, doc_sep=doc_sep):
+            if source != current_source:
+                if current_source is not None:
+                    flush(buffer)
+                    buffer = []
+                    spans.append((span_start, total_written))
+                    span_start = total_written
+                current_source = source
             counts["documents"] += 1
             buffer.append(doc)
             if len(buffer) >= batch_size:
@@ -211,25 +241,39 @@ def prepare_corpus(
                 if progress and counts["documents"] % (batch_size * 10) == 0:
                     print(f"  tokenized {counts['documents']:,} documents / {total_written:,} tokens")
         flush(buffer)
+        if current_source is not None:
+            spans.append((span_start, total_written))
 
     if total_written == 0:
         tmp_bin.unlink(missing_ok=True)
         raise ValueError(f"No tokens produced from {data_path}")
 
-    n_val = int(total_written * val_fraction)
-    n_val = max(0, min(n_val, total_written // 2))
-    n_train = total_written - n_val
+    # Take the last val_fraction of each source's span. Documents stay whole and
+    # contiguous within a source, so nothing leaks, and the split mirrors the mix.
+    val_ranges: List[Tuple[int, int]] = []
+    train_ranges: List[Tuple[int, int]] = []
+    for start, end in spans or [(0, total_written)]:
+        hold = int((end - start) * val_fraction)
+        hold = max(0, min(hold, (end - start) // 2))
+        if hold:
+            train_ranges.append((start, end - hold))
+            val_ranges.append((end - hold, end))
+        else:
+            train_ranges.append((start, end))
+    n_val = sum(e - s for s, e in val_ranges)
+    n_train = sum(e - s for s, e in train_ranges)
 
     # Copy in chunks. np.asarray(memmap[:n]) would pull the whole split into RAM —
     # at a few billion tokens that is several GB and would fail on most machines.
     chunk_tokens = 64 << 20  # 128 MB at 2 bytes per token
     all_tokens = np.memmap(tmp_bin, dtype=dtype, mode="r", shape=(total_written,))
-    for path, begin, end in ((train_bin, 0, n_train), (val_bin, n_train, total_written)):
-        if end <= begin:
+    for path, ranges in ((train_bin, train_ranges), (val_bin, val_ranges)):
+        if not ranges:
             continue
         with path.open("wb") as sink:
-            for offset in range(begin, end, chunk_tokens):
-                np.asarray(all_tokens[offset : min(offset + chunk_tokens, end)]).tofile(sink)
+            for begin, end in ranges:
+                for offset in range(begin, end, chunk_tokens):
+                    np.asarray(all_tokens[offset : min(offset + chunk_tokens, end)]).tofile(sink)
     del all_tokens
     tmp_bin.unlink(missing_ok=True)
 

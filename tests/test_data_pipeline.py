@@ -116,3 +116,36 @@ def test_overlong_conversations_are_dropped_not_truncated(tokenizer, tmp_path):
     assert ds.dropped >= 1
     for i in range(len(ds)):
         assert ds[i]["input_ids"].numel() <= 64
+
+
+def test_validation_split_covers_every_source(tmp_path):
+    """A tail of the whole stream is whatever file sorts last.
+
+    When html.txt joined the corpus it sorted after fineweb, so the validation set
+    became 100% markup and eval loss stopped measuring language. The split must
+    take a slice of each source instead.
+    """
+    src = tmp_path / "corpus"
+    src.mkdir()
+    (src / "a_prose.txt").write_text(
+        "\n\n\n".join(f"Prose document {i} about rivers and weather and trade. " * 12
+                      for i in range(200)), encoding="utf-8")
+    (src / "z_markup.txt").write_text(
+        "\n\n\n".join(f"<html><body><p>page {i}</p></body></html> " * 12
+                      for i in range(200)), encoding="utf-8")
+
+    # A tokenizer trained on both sources, so decoding can actually round-trip each.
+    tok = train_byte_bpe_tokenizer(iter_documents(src, doc_sep="\n\n\n"),
+                                   tmp_path / "tok.json", vocab_size=900)
+    out = tmp_path / "bin"
+    counts = prepare_corpus(tok, src, out, val_fraction=0.2, doc_sep="\n\n\n", progress=False)
+    assert counts["val"] > 0
+
+    val = np.fromfile(out / "val.bin", dtype=np.uint16)
+    text = tok.decode([int(x) for x in val], skip_special_tokens=True)
+    assert "<html>" in text, "markup source missing from validation split"
+    assert "Prose document" in text, "prose source missing from validation split"
+
+    # And training must still hold the bulk of both.
+    train = np.fromfile(out / "train.bin", dtype=np.uint16)
+    assert len(train) > len(val) * 3
