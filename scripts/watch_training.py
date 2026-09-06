@@ -317,7 +317,17 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
     if eval_history:
         lines.append(f"  eval loss   {eval_history[-1]:.4f}      best {min(eval_history):.4f}")
     lines.append(f"  throughput  {tps:,.0f} tok/s" + (f"      MFU {m['mfu']*100:.1f}%" if m.get("mfu") else ""))
-    lines.append(f"  seen        {m.get('tokens_seen', 0):,} of {cfg.get('corpus_tokens', 0):,} tokens")
+    # Compare against what this run will actually consume, not the corpus size.
+    # With --max_steps pinned and a corpus larger than the step budget, measuring
+    # against the corpus makes progress look behind the step counter and the number
+    # can never reach 100%.
+    run_tokens = total * tok_per_step
+    corpus = cfg.get("corpus_tokens") or 0
+    seen = m.get("tokens_seen", 0)
+    lines.append(f"  seen        {seen:,} of {run_tokens:,} tokens this run")
+    if corpus and run_tokens and run_tokens < corpus * 0.98:
+        lines.append(f"              ({seen / corpus * 100:.1f}% of the {corpus:,}-token corpus; "
+                     f"this run covers {run_tokens / corpus * 100:.0f}% of it)")
     lines.append(f"  lr          {m.get('lr', 0):.2e}")
     if m.get("peak_memory_gb"):
         lines.append(f"  peak VRAM   {m['peak_memory_gb']:.2f} GB")

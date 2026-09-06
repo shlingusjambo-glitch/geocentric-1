@@ -344,18 +344,35 @@ def main() -> None:
     out_dir = Path(args.out) if args.out else REPO / "research"
     started_at = datetime.now()
 
-    # Held-out text: the tail of the corpus, which training never reaches in one pass.
+    # Held-out text is decoded from val.bin rather than sliced out of a source file.
+    # Slicing assumed the validation split is the tail of a known file, which held
+    # only while that file sorted last. Adding html.txt moved the split, leaving the
+    # old sample sitting inside the training stream — the logger would have scored
+    # the model on data it trains on and reported a falsely low perplexity.
+    # val.bin is held out by construction, whatever the corpus contains.
     heldout_path = Path(args.heldout)
-    if not heldout_path.exists():
-        source = REPO / "data/pretrain/fineweb.txt"
-        size = source.stat().st_size
-        with source.open("r", encoding="utf-8", errors="replace") as fh:
-            fh.seek(max(0, size - 3_000_000))
-            fh.readline()
-            heldout = fh.read(600_000)
+    val_bin = run_dir / "corpus" / "val.bin"
+    val_meta = run_dir / "corpus" / "val.meta.json"
+    rebuild = not heldout_path.exists()
+    if val_bin.exists() and heldout_path.exists():
+        rebuild = heldout_path.stat().st_mtime < val_bin.stat().st_mtime
+    if rebuild and val_bin.exists():
+        import numpy as np
+
+        from geocentric.checkpoint import find_tokenizer_path
+        from geocentric.tokenizer_train import load_tokenizer
+
+        meta = json.loads(val_meta.read_text(encoding="utf-8")) if val_meta.exists() else {}
+        tokens = np.memmap(val_bin, dtype=np.dtype(meta.get("dtype", "uint16")), mode="r")
+        tok = load_tokenizer(find_tokenizer_path(run_dir))
+        # Skip the first window: it may begin mid-document.
+        sample = tok.decode([int(x) for x in tokens[1024:1024 + 160_000]], skip_special_tokens=True)
         heldout_path.parent.mkdir(parents=True, exist_ok=True)
-        heldout_path.write_text(heldout, encoding="utf-8")
-        log(f"held-out slice written to {heldout_path} ({len(heldout):,} chars)")
+        heldout_path.write_text(sample, encoding="utf-8")
+        log(f"held-out slice rebuilt from {val_bin.name} ({len(sample):,} chars)")
+    elif not heldout_path.exists():
+        raise SystemExit(f"No {val_bin} to draw held-out text from; run prepare first.")
+
     heldout_text = heldout_path.read_text(encoding="utf-8")
 
     done: set[int] = {int(p.stem.split("-")[1]) for p in out_dir.glob("milestone-*.md")}
