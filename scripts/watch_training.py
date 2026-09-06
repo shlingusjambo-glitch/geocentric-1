@@ -332,6 +332,13 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
     if m.get("peak_memory_gb"):
         lines.append(f"  peak VRAM   {m['peak_memory_gb']:.2f} GB")
 
+    if m.get("source_eval"):
+        lines.append(f"  held-out sources · step {m.get('source_eval_step', '?')}")
+        for source, result in m["source_eval"].items():
+            loss_value = result.get("loss")
+            value = f"{loss_value:.4f}" if loss_value is not None else "unavailable"
+            lines.append(f"    {Path(source).name[:30]:30s} loss {value:>11s}  n={result.get('tokens', 0):,}")
+
     if len(history) > 2:
         lines.append("")
         lines.append(f"  train loss  {sparkline(history, min(48, width - 20))}")

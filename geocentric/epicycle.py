@@ -41,6 +41,7 @@ class EpicycleConfig:
     armillary_dwell: int = 200    # steps a ring stays hot before the next takes over
     armillary_factored: bool = False  # experimental row/column second moments
     armillary_partitioned: bool = False  # opt-in: split tensors across momentum rings
+    equant_sparse_replay: bool = False  # eager selected-row vocabulary backward
 
     def __post_init__(self):
         if not 0 < self.deferent_start <= 1:
@@ -74,6 +75,9 @@ class EpicycleConfig:
             return cls(enabled=True, deferent=True, horizon=True, equant=False, armillary=False)
         if name == "quality":
             return cls(enabled=True, deferent=False, horizon=True, equant=True, armillary=False)
+        if name == "selective":
+            return cls(enabled=True, deferent=False, horizon=True, equant=True,
+                       armillary=False, equant_sparse_replay=True)
         if name == "memory":
             # Buy parameters with optimizer state.
             return cls(enabled=True, deferent=True, horizon=True, equant=False, armillary=True)
@@ -84,7 +88,7 @@ class EpicycleConfig:
         if name == "balanced":
             return cls(enabled=True, equant=False, armillary=True, armillary_factored=True,
                        armillary_partitioned=True)
-        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity, balanced.")
+        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity, balanced, selective.")
 
 
 class EpicycleScheduler:

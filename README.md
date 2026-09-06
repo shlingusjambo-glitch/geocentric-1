@@ -175,7 +175,7 @@ training research; each gear has a measurable cost as well as a potential benefi
 geocentric pretrain --data_path corpus.txt --preset 250m --epicycle speed
 ```
 
-`off` (default) · `speed` · `quality` · `memory` · `full` · `capacity` · `balanced` (experimental). None of them changes the
+`off` (default) · `speed` · `quality` · `memory` · `full` · `capacity` · `balanced` (experimental) · `selective` (experimental). None of them changes the
 architecture: an EPICYCLE checkpoint is an ordinary checkpoint that loads in code that
 has never heard of it.
 
@@ -532,3 +532,12 @@ python scripts/inference_bench.py --device cuda
 ```
 
 See [this pass’s results](research/benchmarks/INFERENCE_AND_BALANCED.md) for measurements and limitations.
+
+
+## Training refinement: visibility and optional alignment
+
+EPICYCLE's opt-in `selective` preset skips backward vocabulary replay for tokens that EQUANT already gave zero gradient. Matched M4 synthetic updates measured approximately **5% more tokens/s**; RTX 2060 timing remains unmeasured. Existing checkpoint shapes and preset defaults are unchanged. New corpus metadata enables **per-source held-out losses** in the training watcher, so HTML and language files have separate readings.
+
+`geocentric align-safety` is a separate post-SFT command that asks before training, preserves an unchanged original, and writes a second model trained on reviewed harm-focused refusal, benign-helpfulness and uncertainty examples. `geocentric check-behavior` compares held-out responses and short-answer factual scores. These are evaluation and training tools, not a guarantee of zero hallucinations.
+
+See [training refinement usage, measurements, data format and limitations](docs/TRAINING_REFINEMENT.md).

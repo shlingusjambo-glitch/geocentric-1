@@ -138,3 +138,19 @@ setup to the baseline, did not reset initialization seeds, and compared training
 crossing times. Those results cannot establish a reliable speed-to-quality advantage.
 Beating larger cloud-trained models remains a research objective, not an outcome
 established by these short tests.
+
+## Selected vocabulary replay (opt-in)
+
+`--epicycle selective --compile off` keeps the `quality` preset's policy and enables
+selected-row backward replay in chunked vocabulary cross-entropy. Forward scores
+all tokens; backward compacts and replays only rows that EQUANT gives nonzero
+gradient. It preserves the first-order objective, with different floating-point
+accumulation order. Existing presets and checkpoint tensor shapes remain unchanged.
+For an existing `quality` or `full` run, add `--equant_sparse_replay --compile off`
+to its original command to keep the optimizer choice. Compiled execution falls
+back to ordinary chunked replay.
+
+Matched M4 synthetic update benchmarks measured 4.87–5.34% higher throughput.
+This is neither a CUDA result nor a measured quality gain. See the
+[training refinement guide](docs/TRAINING_REFINEMENT.md) for raw measurements,
+limitations, per-source validation, and the separate optional alignment command.

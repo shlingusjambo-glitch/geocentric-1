@@ -109,7 +109,7 @@ def pretrain(
 
     epi = epicycle if isinstance(epicycle, EpicycleConfig) else EpicycleConfig.preset(epicycle or "off")
     if loss_chunk_size is None:
-        loss_chunk_size = 256 if epi.enabled and epi.armillary else 0
+        loss_chunk_size = 256 if epi.enabled and (epi.armillary or epi.equant_sparse_replay) else 0
 
     if overwrite_output_dir:
         for pattern in ("*_pretrained*.pt", "model.pt"):
@@ -146,6 +146,13 @@ def pretrain(
         if val_bin.exists() and val_bin.stat().st_size > block_size * 4
         else None
     )
+
+    source_eval_available = (
+        val_bin.exists() and val_meta.exists()
+        and bool(json.loads(val_meta.read_text(encoding="utf-8")).get("sources"))
+    )
+    if val_bin.exists() and not source_eval_available:
+        print("Per-source loss unavailable for legacy corpus metadata; explicit re-preparation enables it.")
 
     # ---- model -----------------------------------------------------------
     config = GPTConfig(
@@ -187,6 +194,7 @@ def pretrain(
     # a large part of why small from-scratch models plateau early.
     model = model.to(device=device, dtype=torch.float32)
     model.loss_chunk_size = loss_chunk_size
+    model.loss_sparse_replay = epi.enabled and epi.equant_sparse_replay
     if gradient_checkpointing:
         # Users commonly add this flag after an OOM on an existing run. Loading
         # checkpoint config must not silently discard that new memory request.
@@ -280,6 +288,11 @@ def pretrain(
             print(f"Resuming at step {start_step:,} of {total_steps:,}.")
 
     active_model, compiled = maybe_compile(model, device, compile_mode)
+    if model.loss_sparse_replay:
+        if compiled or not model.loss_chunk_size:
+            print("EQUANT sparse replay inactive: requires eager mode and positive loss_chunk_size.")
+        else:
+            print("EQUANT sparse replay: backward recomputes selected token rows only.")
     use_scaler = device.type == "cuda" and dtype == torch.float16
     scaler = torch.amp.GradScaler(enabled=use_scaler)
     if use_scaler and getattr(model, "_grad_scaler_state", None):
@@ -543,14 +556,22 @@ def pretrain(
                     })
                     meter.reset()
 
-                if eval_loader is not None and ((eval_every > 0 and step % eval_every == 0)
+                if (eval_loader is not None or source_eval_available) and ((eval_every > 0 and step % eval_every == 0)
                                                 or step >= total_steps):
                     # Evaluate at full depth and full context: an eval loss measured
                     # on a half-built model is not comparable across the run.
                     with _at_full_capacity(model, epicycle_sched):
-                        eval_loss = evaluate(active_model, eval_loader, device, autocast)
+                        eval_loss = (evaluate(active_model, eval_loader, device, autocast)
+                                     if eval_loader is not None else None)
+                        from geocentric.source_eval import evaluate_sources
+                        source_losses = evaluate_sources(model, val_bin, val_meta, device, autocast)
+                    if source_losses:
+                        update_training_metrics(out, {"source_eval": source_losses, "source_eval_step": step})
+                        for source, result in source_losses.items():
+                            if result["loss"] is not None:
+                                print(f"  {Path(source).name}: loss {result['loss']:.4f} ({result['tokens']:,} held-out tokens)")
                     if eval_loss is None:
-                        print("\n  eval skipped: validation split holds no complete window.")
+                        print("\n  aggregate eval skipped: validation split holds no complete window.")
                     else:
                         print(f"\n  eval loss {eval_loss:.4f} | ppl {math.exp(min(eval_loss, 20)):.2f}")
                         update_training_metrics(out, {"step": step, "eval_loss": eval_loss, "message": "Evaluated."})

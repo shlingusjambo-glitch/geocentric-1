@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("--no_resume", action="store_true")
     pre.add_argument("--reprepare", action="store_true", help="Re-tokenize the corpus even if shards exist")
     pre.add_argument("--epicycle", default="off",
-                     choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced"],
+                     choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective"],
                      help="EPICYCLE training gears. speed = elastic depth + context; "
                           "quality = adds token selection; memory = adds rotating optimizer "
                           "state so more parameters fit; full = everything.")
@@ -151,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--max_steps", type=int, default=0)
     pl.add_argument("--doc_sep", default=None)
     pl.add_argument("--epicycle", default="off",
-                    choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced"])
+                    choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective"])
     _add_common_training_flags(pl)
     _add_loss_guard_flags(pl)
     _add_watermark_flags(pl)
@@ -273,6 +273,28 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("download-alpaca", help="Download a cleaned Alpaca instruction set")
     sub.add_parser("list-models", help="List local checkpoints under runs/ and models/")
 
+    align = sub.add_parser("align-safety", help="Optional post-SFT harm-focused refusal and uncertainty training")
+    align.add_argument("--model_dir", required=True)
+    align.add_argument("--output_dir", required=True)
+    align.add_argument("--data_path", required=True, help="Reviewed JSONL with refusal, benign, and uncertainty categories")
+    align.add_argument("--checkpoint", default=None)
+    align.add_argument("--epochs", type=int, default=1)
+    align.add_argument("--batch_size", type=int, default=1)
+    align.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    align.add_argument("--learning_rate", type=float, default=1e-5)
+    align.add_argument("--dtype", default="auto", choices=["auto", "fp32", "fp16", "bf16"])
+    align.add_argument("--yes", action="store_true", help="Explicitly accept the printed training plan")
+
+    behavior = sub.add_parser("check-behavior", help="Generate auditable held-out factuality/behavior comparisons")
+    behavior.add_argument("--model_dir", required=True)
+    behavior.add_argument("--compare_dir", default=None)
+    behavior.add_argument("--data_path", required=True)
+    behavior.add_argument("--output", required=True)
+    behavior.add_argument("--max_new_tokens", type=int, default=128)
+
+    for training_parser in (pre, pl):
+        training_parser.add_argument("--equant_sparse_replay", action="store_true",
+                                     help="Replay only selected vocabulary rows; requires an EQUANT preset and eager mode")
     return parser
 
 
@@ -329,6 +351,13 @@ def _run_pretrain(args: argparse.Namespace, watermark=None) -> None:
     if batch == 0:
         print("Batch size: measuring on device...")
 
+    from geocentric.epicycle import EpicycleConfig
+    epi = EpicycleConfig.preset(getattr(args, "epicycle", "off"))
+    if getattr(args, "equant_sparse_replay", False):
+        if not epi.enabled or not epi.equant:
+            raise ValueError("--equant_sparse_replay requires quality, selective, or full")
+        epi.equant_sparse_replay = True
+
     pretrain(
         data_path=args.data_path,
         output_dir=args.output_dir,
@@ -357,7 +386,7 @@ def _run_pretrain(args: argparse.Namespace, watermark=None) -> None:
         compile_mode=args.compile_mode,
         resume=not args.no_resume,
         force_reprepare=args.reprepare,
-        epicycle=getattr(args, "epicycle", "off"),
+        epicycle=epi,
         watermark=watermark,
         loss_guard=not getattr(args, "no_loss_guard", False),
         resume_from=getattr(args, "resume_from", "auto"),
@@ -844,6 +873,16 @@ def main() -> None:
 
     if args.command == "pretrain":
         _run_pretrain(args)
+    elif args.command == "align-safety":
+        from geocentric.alignment import align_safety
+        align_safety(args.model_dir, args.output_dir, args.data_path,
+                     checkpoint=args.checkpoint, epochs=args.epochs, batch_size=args.batch_size,
+                     gradient_accumulation_steps=args.gradient_accumulation_steps,
+                     learning_rate=args.learning_rate, dtype_name=args.dtype, yes=args.yes)
+    elif args.command == "check-behavior":
+        from geocentric.behavior_eval import check_behavior
+        check_behavior(args.model_dir, args.data_path, args.output,
+                       compare_dir=args.compare_dir, max_new_tokens=args.max_new_tokens)
     elif args.command == "sft":
         _run_sft(args)
     elif args.command == "pipeline":

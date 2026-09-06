@@ -221,7 +221,7 @@ def prepare_corpus(
         # stream. A single contiguous tail is whatever file happens to sort last:
         # adding html.txt silently made the validation set 100% markup, so eval
         # loss stopped measuring language at all.
-        spans: List[Tuple[int, int]] = []
+        spans: List[Tuple[int, int, str]] = []
         span_start = 0
         current_source = None
 
@@ -230,7 +230,7 @@ def prepare_corpus(
                 if current_source is not None:
                     flush(buffer)
                     buffer = []
-                    spans.append((span_start, total_written))
+                    spans.append((span_start, total_written, current_source))
                     span_start = total_written
                 current_source = source
             counts["documents"] += 1
@@ -242,19 +242,25 @@ def prepare_corpus(
                     print(f"  tokenized {counts['documents']:,} documents / {total_written:,} tokens")
         flush(buffer)
         if current_source is not None:
-            spans.append((span_start, total_written))
+            spans.append((span_start, total_written, current_source))
 
     if total_written == 0:
         tmp_bin.unlink(missing_ok=True)
         raise ValueError(f"No tokens produced from {data_path}")
 
-    # Take the last val_fraction of each source's span. Documents stay whole and
-    # contiguous within a source, so nothing leaks, and the split mirrors the mix.
+    # Take a token-disjoint tail of each source span. A document can straddle
+    # the split; source metrics are validation loss, not proof of factual accuracy.
     val_ranges: List[Tuple[int, int]] = []
     train_ranges: List[Tuple[int, int]] = []
-    for start, end in spans or [(0, total_written)]:
+    source_meta = {"train": [], "val": []}
+    offsets = {"train": 0, "val": 0}
+    for start, end, source in spans or [(0, total_written, str(data_path))]:
         hold = int((end - start) * val_fraction)
         hold = max(0, min(hold, (end - start) // 2))
+        for split, size in (("train", end - start - hold), ("val", hold)):
+            if size:
+                source_meta[split].append({"source": source, "start": offsets[split], "tokens": size})
+                offsets[split] += size
         if hold:
             train_ranges.append((start, end - hold))
             val_ranges.append((end - hold, end))
@@ -269,6 +275,7 @@ def prepare_corpus(
     all_tokens = np.memmap(tmp_bin, dtype=dtype, mode="r", shape=(total_written,))
     for path, ranges in ((train_bin, train_ranges), (val_bin, val_ranges)):
         if not ranges:
+            path.unlink(missing_ok=True)
             continue
         with path.open("wb") as sink:
             for begin, end in ranges:
@@ -282,9 +289,12 @@ def prepare_corpus(
     for path, count in ((train_meta, n_train), (val_meta, n_val)):
         if count > 0 or path is train_meta:
             path.write_text(
-                json.dumps({"tokens": count, "dtype": dtype.name, "vocab_size": vocab_size}, indent=2),
+                json.dumps({"tokens": count, "dtype": dtype.name, "vocab_size": vocab_size,
+                            "sources": source_meta["train" if path == train_meta else "val"]}, indent=2),
                 encoding="utf-8",
             )
+    if not n_val:
+        val_meta.unlink(missing_ok=True)
     if progress:
         print(
             f"Corpus ready: {counts['documents']:,} documents -> "

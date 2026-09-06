@@ -67,6 +67,7 @@ def sft(
     loss_guard: bool = True,
     snapshot_every: int = 100,
     loss_chunk_size: int = 0,
+    checkpoint_name: Optional[str] = None,
 ) -> None:
     if loss_chunk_size < 0 or gradient_accumulation_steps < 1:
         raise ValueError("loss_chunk_size must be nonnegative and accumulation positive")
@@ -89,7 +90,7 @@ def sft(
     preferred = pretrained_checkpoint_name(modelver, best=True)
     model = load_checkpoint(
         src, device=device, dtype=torch.float32,
-        checkpoint_name=preferred if (src / preferred).is_file() else None,
+        checkpoint_name=checkpoint_name or (preferred if (src / preferred).is_file() else None),
     )
     model.loss_chunk_size = loss_chunk_size
     if drop_watermark:

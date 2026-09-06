@@ -20,7 +20,7 @@ def source(tmp_path):
     return directory, corpus, tokenizer
 
 
-@pytest.mark.parametrize("preset", ["speed", "capacity"])
+@pytest.mark.parametrize("preset", ["speed", "capacity", "selective"])
 def test_pretrain_checkpoint_tokens_and_completed_resume(source, monkeypatch, preset):
     import geocentric.train_pretrain as train
     directory, corpus, tokenizer = source
@@ -47,6 +47,12 @@ def test_pretrain_checkpoint_tokens_and_completed_resume(source, monkeypatch, pr
     for key, tensor in saved["model"].items():
         assert torch.equal(tensor, resumed["model"][key])
     assert resumed["tokens_seen"] == saved["tokens_seen"]
+    if preset == "selective":
+        train.pretrain(**{**kwargs, "max_steps": 4})
+        continued = torch.load(path, weights_only=False)
+        assert continued["step"] == 4
+        assert continued["tokens_seen"] == 4 * 2 * 2 * 32
+        assert any(not torch.equal(saved["model"][k], v) for k, v in continued["model"].items())
 
 
 def test_sft_partial_accumulation_window_really_updates(source, monkeypatch):
@@ -86,3 +92,20 @@ def test_vision_partial_window_really_updates(source, monkeypatch):
     assert saved["step"] == 1
     assert any("exp_avg" in s for s in saved["optimizer"]["state"].values())
     assert json.loads(data.read_text())[0]["image"] == "red.png"
+
+
+def test_source_losses_report_even_when_aggregate_window_is_too_short(source, monkeypatch):
+    import geocentric.train_pretrain as train
+    directory, corpus, tokenizer = source
+    monkeypatch.setattr(train, 'select_device', lambda: torch.device('cpu'))
+    tokens = len(tokenizer.encode(corpus.read_text()).ids) + 1
+    train.pretrain(data_path=str(corpus), output_dir=str(directory), block_size=32,
+                   n_layer=1, n_head=2, n_embd=32, batch_size=1,
+                   gradient_accumulation_steps=1, max_steps=1, num_workers=0,
+                   dtype_name='fp32', compile_mode='off', eval_every=1,
+                   val_fraction=4.5/tokens, loss_guard=False)
+    metrics=json.loads((directory/'training_metrics.json').read_text())
+    assert metrics['source_eval_step']==1
+    result=metrics['source_eval'][str(corpus)]
+    assert result['loss'] > 0 and result['tokens']==3
+    assert metrics['eval_loss'] is None
