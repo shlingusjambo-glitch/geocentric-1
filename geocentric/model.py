@@ -377,7 +377,7 @@ class GeocentricGPT(nn.Module):
         top_p: float = 0.95,
         min_p: float = 0.0,
         eos_id: Optional[int] = None,
-        repetition_penalty: float = 1.25,
+        repetition_penalty: float = 1.1,
         repetition_window: int = 128,
         logits_processor=None,
         images: Optional[torch.Tensor] = None,
