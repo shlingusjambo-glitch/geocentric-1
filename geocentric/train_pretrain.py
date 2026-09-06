@@ -210,6 +210,23 @@ def pretrain(
         )
 
     # ---- batch sizing ----------------------------------------------------
+    # A resumed run must reuse the original batch geometry. total_steps is derived
+    # from it, and the cosine schedule is derived from total_steps — so a probe that
+    # returns a different batch size (because something else briefly held VRAM)
+    # silently rewrites the learning-rate schedule mid-run.
+    prior = {}
+    metrics_path = out / "training_metrics.json"
+    if resume and metrics_path.exists():
+        try:
+            prior = json.loads(metrics_path.read_text(encoding="utf-8")).get("config", {})
+        except (OSError, json.JSONDecodeError):
+            prior = {}
+    if batch_size <= 0 and prior.get("batch_size"):
+        batch_size = int(prior["batch_size"])
+        gradient_accumulation_steps = int(prior.get("gradient_accumulation_steps") or gradient_accumulation_steps)
+        print(f"Reusing batch geometry from the previous run: {batch_size} x "
+              f"{gradient_accumulation_steps} (keeps the LR schedule continuous)")
+
     if batch_size <= 0:
         batch_size = find_batch_size(
             model, block_size, device, dtype,
@@ -311,6 +328,8 @@ def pretrain(
             "params": n_params, "batch_size": batch_size,
             "gradient_accumulation_steps": gradient_accumulation_steps,
             "learning_rate": learning_rate, "total_steps": total_steps,
+            "batch_size": batch_size,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
             "tokens_per_step": tokens_per_step, "dtype": str(dtype), "compiled": compiled,
             "corpus_tokens": total_corpus_tokens, "recommended_tokens": budget,
             "epicycle": epi.to_dict(), "watermark_identity": watermark.identity if watermark else None,

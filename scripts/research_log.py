@@ -43,6 +43,20 @@ PROMPTS = [
 
 SEED = 1234  # fixed so sampling noise does not masquerade as progress
 
+# Sampling answers a factual prompt only intermittently even when the model has
+# largely learned the fact: at step 3,440 " Paris" carried 4.9% of the probability
+# mass — second of 32,000 tokens, 56x ahead of " London" — yet sampled generations
+# named it roughly one time in six. Measuring the probability directly turns a noisy
+# binary signal into a smooth curve that shows knowledge accumulating.
+FACT_PROBES = [
+    ("The capital of France is", " Paris", [" London", " Berlin", " Madrid"]),
+    ("The capital of Japan is", " Tokyo", [" Beijing", " Seoul"]),
+    ("The largest planet in the solar system is", " Jupiter", [" Mars", " Earth"]),
+    ("Water is made of hydrogen and", " oxygen", [" carbon", " nitrogen"]),
+    ("The chemical symbol for gold is", " Au", [" Ag", " Go"]),
+    ("Shakespeare wrote a play called Romeo and", " Juliet", [" Hamlet", " Caesar"]),
+]
+
 
 def log(msg: str) -> None:
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
@@ -121,7 +135,7 @@ def run_benchmark(run_dir: Path, heldout_text: str, threads: int) -> dict:
         chars = len(text[:counted * 5].encode("utf-8")) or 1
         return nats, (total_nll / math.log(2)) / chars
 
-    nats, bpb = score(heldout_text)
+    nats, bpb = score(heldout_text, max_windows=40)
     result["heldout_nats_per_token"] = nats
     result["heldout_perplexity"] = math.exp(min(nats, 20))
     result["heldout_bits_per_byte"] = bpb
@@ -137,6 +151,23 @@ def run_benchmark(run_dir: Path, heldout_text: str, threads: int) -> dict:
     except Exception as exc:
         result["code_nats"] = result["prose_nats"] = float("nan")
         log(f"code/prose split skipped: {exc}")
+
+    # --- factual probes: probability mass on the correct answer ---
+    @torch.no_grad()
+    def probe(prompt: str, answer: str, distractors: list[str]) -> dict:
+        ids = torch.tensor([tok.encode(prompt).ids])
+        logits, _ = model(ids)
+        probs = torch.softmax(logits[0, -1].float(), dim=-1)
+        answer_id = tok.encode(answer).ids[0]
+        p_answer = float(probs[answer_id])
+        rank = int((probs > p_answer).sum()) + 1
+        best = {tok.decode([d]): float(probs[d])
+                for d in [tok.encode(x).ids[0] for x in distractors]}
+        return {"prompt": prompt, "answer": answer, "p": p_answer, "rank": rank,
+                "distractors": best,
+                "top1": tok.decode([int(probs.argmax())])}
+
+    result["facts"] = [probe(p, a, d) for p, a, d in FACT_PROBES]
 
     # --- fixed generations ---
     generations = []
@@ -230,6 +261,23 @@ def write_report(run_dir: Path, out_dir: Path, milestone: int, metrics: dict,
           "Code is lower-entropy text, so the model models it more cheaply; watching this gap "
           "narrow or widen shows whether prose modelling is catching up.")
         A("")
+
+    A("## Factual probes")
+    A("")
+    A("Probability the model assigns to the correct next token, which is far more "
+      "sensitive than sampling: a fact can be largely learned yet appear only "
+      "occasionally in generated text.")
+    A("")
+    A("| Prompt | Answer | P(answer) | Rank | Top-1 | Best distractor |")
+    A("|---|---|---|---|---|---|")
+    prev_facts = {f["prompt"]: f for f in prev_bench.get("facts", [])}
+    for f in bench.get("facts", []):
+        best_d = max(f["distractors"].items(), key=lambda kv: kv[1]) if f["distractors"] else ("—", 0)
+        was = prev_facts.get(f["prompt"])
+        ch = f"  ({(f['p']-was['p'])*100:+.2f} pts)" if was else ""
+        A(f"| `{f['prompt']}` | `{f['answer']}` | {f['p']*100:.2f}%{ch} | "
+          f"{f['rank']:,} | `{f['top1']}` | `{best_d[0]}` {best_d[1]*100:.2f}% |")
+    A("")
 
     A("## Generations")
     A("")

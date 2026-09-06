@@ -3,71 +3,140 @@
     "bench": {
       "params": 120787072,
       "block_size": 1024,
-      "heldout_nats_per_token": 3.726991128921509,
-      "heldout_perplexity": 41.55388957865741,
-      "heldout_bits_per_byte": 1.0663433973721568,
-      "code_nats": 2.4673624436060586,
-      "prose_nats": 3.236599008242289,
+      "heldout_nats_per_token": 3.4234290957450866,
+      "heldout_perplexity": 30.674420405894008,
+      "heldout_bits_per_byte": 0.9825061086475739,
+      "code_nats": 1.975629488627116,
+      "prose_nats": 2.713584780693054,
+      "facts": [
+        {
+          "prompt": "The capital of France is",
+          "answer": " Paris",
+          "p": 0.0039337798953056335,
+          "rank": 39,
+          "distractors": {
+            " London": 0.0008089609909802675,
+            " Berlin": 0.000232008722377941,
+            " Madrid": 0.00029298581648617983
+          },
+          "top1": " the"
+        },
+        {
+          "prompt": "The capital of Japan is",
+          "answer": " Tokyo",
+          "p": 0.004465444479137659,
+          "rank": 33,
+          "distractors": {
+            " Beijing": 0.0014128820039331913,
+            " Se": 0.0011867277789860964
+          },
+          "top1": " the"
+        },
+        {
+          "prompt": "The largest planet in the solar system is",
+          "answer": " Jupiter",
+          "p": 0.03118823654949665,
+          "rank": 4,
+          "distractors": {
+            " Mars": 0.032268207520246506,
+            " Earth": 0.027062617242336273
+          },
+          "top1": " the"
+        },
+        {
+          "prompt": "Water is made of hydrogen and",
+          "answer": " oxygen",
+          "p": 0.36701303720474243,
+          "rank": 1,
+          "distractors": {
+            " carbon": 0.02698454260826111,
+            " nitrogen": 0.03623021021485329
+          },
+          "top1": " oxygen"
+        },
+        {
+          "prompt": "The chemical symbol for gold is",
+          "answer": " Au",
+          "p": 0.010977879166603088,
+          "rank": 16,
+          "distractors": {
+            " Ag": 0.0009318261290900409,
+            " Go": 2.2765007088310085e-05
+          },
+          "top1": " the"
+        },
+        {
+          "prompt": "Shakespeare wrote a play called Romeo and",
+          "answer": " Juliet",
+          "p": 0.9902156591415405,
+          "rank": 1,
+          "distractors": {
+            " Hamlet": 1.4716155192218139e-06,
+            " Caesar": 3.204706808901392e-05
+          },
+          "top1": " Juliet"
+        }
+      ],
       "generations": [
         {
           "name": "factual",
           "prompt": "The capital of France is",
-          "output": "also not a government.\n- \"Military\" means the military to be held in a state of war with the British and American colonies, but it is also considered a political entity and has an official language. The term \"same\" means \"to have a political or political party.\"\n- \"Italian\" means \"to have a military\" or \"to be a military\". It",
-          "seconds": 1.665935750999779
+          "output": "the town of Soudes-Leh.\nThe capital is the capital in Luxemburg (now Luxemburg).\n|1||-|||||\n|2||-|||||\n|3||-||\u2013|||\n|4||\u2013||\u2013|||||\n|5||\u2013||\u2013|||\n|6||\u2013||\u2013|||",
+          "seconds": 1.5460407320060767
         },
         {
           "name": "science",
           "prompt": "Photosynthesis is the process by which",
-          "output": "an atom moves from one another to another, in order to produce a new form of energy.\nIt is also known as the \"internal\" process because it involves combining the energy and other elements within an atom into a single atom.\nIn addition, it is not surprising that the molecule can be absorbed by a material (or any substance) at its ends, even though it is constantly being",
-          "seconds": 1.684832766000909
+          "output": "photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic photosynthetic",
+          "seconds": 1.5473900850047357
         },
         {
           "name": "definition",
           "prompt": "A large language model is",
-          "output": "an interactive platform for the project to be used in the development of a new kind.\nThe programme will be open and open to all users, from the user, from the location of the school library at the local library. The training will then be conducted with the help of the instructor/teacher staff, who will create a project plan for this workshop. This will also allow you to make your own",
-          "seconds": 1.6694341200018243
+          "output": "an interactive platform that can be used by the students to provide instruction and assessment.\n- Language Learning (L2) is a core instructional approach that enables students with learning differences from different language skills to take on the same content areas. It provides a variety of scaffolds for differentiated instruction based on the needs of a learner, based on the strengths and weaknesses of each student and with which they are already",
+          "seconds": 1.545151790996897
         },
         {
           "name": "narrative",
           "prompt": "The old lighthouse keeper walked down to the shore and",
-          "output": "moved down into the ground.\nIn the first part of the nineteenth century, the first man had been captured by the British in 1789, but it is said that the French ship was made in a land called the Lighthouse. It is also believed that it was not known from the Dutch East, but from the time of the 16th century, there were no settlers here.\nIn the",
-          "seconds": 1.6745457960023487
+          "output": "saw a baby crow.\n- \"Mama Bird\" (1868). Retrieved: April 18, 2014.\n- \"The Staircase of the Queen's Cloak\". National Union Star. Archived from the original on March 3, 2016. Retrieved March 4, 2016.\n- \"A Penny, a Queen's Cage at the Rye\n- The Queen's Cl",
+          "seconds": 1.546066149006947
         },
         {
           "name": "instructional",
           "prompt": "To bake bread, first",
-          "output": ", we need to turn the ball into a clean jar.\nWe must keep in mind that the air is an area of warm weather and may have an impact on the temperature. If you are concerned about the temperature, the snow should be wet. If you have a cold winter winter season, you can also use the snow as an indicator for the temperature. The snow should be dry, so it",
-          "seconds": 1.6785985599999549
+          "output": "cut it into slices.\n- Bake for about 25 minutes or until they are golden brown and slightly golden brown.\n- Once they are golden brown, slice them out of the flour and drizzle a tangy tomato sauce over them. Let the mixture sit on top of the bread for around 10 seconds or so to coat them completely before covering them with a fork or frying pan. Yum!\n-",
+          "seconds": 1.5441339340031845
         },
         {
           "name": "list",
           "prompt": "Three reasons to exercise regularly:",
-          "output": "- Increased concentration.\n- Reduced caffeine levels\n- More severe physical activity\n- Impaired muscle tone, and increasing body fat intake\n- Higher risk of cardiovascular disease\n- Decreased blood pressure\n- Increased risk for heart diseases\nIn addition, it is important that you do not have to take a course before exercising. If you have a high-intensity workout and are not physically active",
-          "seconds": 1.6735787269972207
+          "output": "- Reduced blood pressure and high cholesterol, which can reduce or block the risk for heart attack and stroke.\n- Lowering systolic blood pressure is important because it increases your blood pressure.\nExercise may help prevent hypertension\n- Regular physical activity helps improve the blood pressure and blood pressure while lowering the risk of high blood pressure and high cholesterol.\n- Regular physical activity also improves your blood",
+          "seconds": 1.5457571550068678
         },
         {
           "name": "code",
           "prompt": "```python\ndef fibonacci(n):",
-          "output": "return 1.0 * 1.0 * 0.1 * 2.0 / 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 / 1.0 * 1.0 * 1.0 * 1.",
-          "seconds": 1.6717001280012482
+          "output": "for n in len(self.num_k):\n        if (np.multiply(self.num_k) < 1e-5):\n            for n in self.num_k:\n                if (np.multiply(self.num_k) < -1e-5):\n                        self.num_k = self.num_k.shape",
+          "seconds": 1.5429261779936496
         },
         {
           "name": "dialogue",
           "prompt": "\"Where are you going?\" she asked. He",
-          "output": "explained that there's a special place where the author will share information and ideas, rather than just a fancy name like \"The Book of Stakes\" or \"A Story of Stakes.\"\nThere's also one important part of the story of Stake, also known as \"The Book of Stakes,\" a short-lived person who lived in New England in 1790 and later was a descend",
-          "seconds": 1.6756662339976174
+          "output": "said, \"I'm not sure. I feel very embarrassed.\"\nThe child laughed and said, \"I'm going to be here.\" The teacher had him sit down and said, \"Please tell me what you've done so far. I'll say, 'Well now I want to walk in.'\"\nThe child was saying, \"I didn't know, I can do this. It",
+          "seconds": 1.5455366120004328
         },
         {
           "name": "arithmetic",
           "prompt": "If a train leaves at 3pm and travels for two hours, it arrives at",
-          "output": "the same time.\nWhat is the difference between speed and power?\nA speed point is a constant distance to be reached by using speed and force. It is also used in different ways (e.g., through speed and velocity) to establish an altitude.\nWhat are the difference between speed and force?\nThe difference between speed and power is that the rate of change is always determined by",
-          "seconds": 1.6849965569999767
+          "output": "4:55 p.m. on the way to the train station.\n- New trains arrive in the morning and depart from 5:00 p.m. until 7:30 p.m. on the way. If you stop after 9:00 p.m., you will see another train arrives from 8:00 - 11:00 p.m. on that train, so stay",
+          "seconds": 1.5534920649952255
         },
         {
           "name": "conversational",
           "prompt": "Hello! What can you help me with?",
-          "output": "- 1. What do you think is a good way to communicate with each other and to communicate with others?\n- 2. How do you feel when you are in this situation?\nThere are many ways we can help you to communicate with each other. Let\u2019s explore some ways you can use these strategies to make your own communication easier.\n- 3. Write a few sentences.",
-          "seconds": 1.67653284699918
+          "output": "- 1. I would like to thank my teacher for giving me some wonderful writing and a bit of my blogging skills to write about.\n- 2. Thank you, I love your advice and we know what you are going to say. Thanks you.\n- 3. I\u2019m so glad you got this blog post. Thank you, I will be here and happy.\n-",
+          "seconds": 1.54710982600227
         }
       ]
     },
@@ -91,41 +160,152 @@
         "compiled": true,
         "corpus_tokens": 2645628484,
         "recommended_tokens": 2415741440,
-        "command": "/home/elywright/Geocentric/geocentric/.venv/bin/python -m geocentric.cli pretrain --data_path data/pretrain --output_dir runs/geocentric-120m --preset 120m --block_size 1024 --vocab_size 32000 --gradient_accumulation_steps 122 --learning_rate 6e-4 --warmup_ratio 0.01 --doc_sep '\n\n\n' --eval_every 250 --save_every 100 --modelver Geocentric"
+        "epicycle": {
+          "enabled": true,
+          "deferent": true,
+          "deferent_start": 0.5,
+          "deferent_full_by": 0.6,
+          "horizon": true,
+          "horizon_start": 256,
+          "horizon_full_by": 0.5,
+          "horizon_mode": "fold",
+          "equant": false,
+          "equant_keep": 0.65,
+          "equant_trim": 0.02,
+          "equant_after": 0.15,
+          "armillary": false,
+          "armillary_rings": 4,
+          "armillary_dwell": 200,
+          "armillary_factored": false
+        },
+        "watermark_identity": null,
+        "loss_chunk_size": 0,
+        "loss_guard": {
+          "enabled": true,
+          "spike_sigma": 4.0,
+          "min_spike_delta": 0.15,
+          "warmup_steps": 50,
+          "skip_bad_updates": true,
+          "max_consecutive_spikes": 4,
+          "rollback": true,
+          "max_rollbacks": 3,
+          "rewarm_steps": 100,
+          "divergence_window": 300,
+          "divergence_ratio": 1.3,
+          "stop_on_divergence": false,
+          "plateau_window": 2000,
+          "plateau_delta": 0.005,
+          "horizon": 50
+        },
+        "resume_from": "auto",
+        "command": "/home/elywright/Geocentric/geocentric/.venv/bin/python -m geocentric.cli pretrain --data_path data/pretrain --output_dir runs/geocentric-120m --preset 120m --block_size 1024 --vocab_size 32000 --gradient_accumulation_steps 122 --learning_rate 6e-4 --warmup_ratio 0.01 --doc_sep '\n\n\n' --eval_every 250 --save_every 100 --modelver Geocentric --epicycle speed"
       },
       "epoch": 0,
       "epochs": 0,
-      "step": 780,
+      "step": 5000,
       "batch": 0,
-      "loss": 3.7299959620491405,
-      "perplexity": 41.678939866178446,
-      "eval_loss": 4.043354721069336,
+      "loss": 3.2492733001708984,
+      "perplexity": 25.771604889777862,
+      "eval_loss": 3.624161410331726,
       "best_eval_loss": null,
       "history": {
         "steps": [
-          744,
-          760,
-          780
+          4777,
+          4780,
+          4800,
+          4820,
+          4840,
+          4860,
+          4880,
+          4900,
+          4920,
+          4940,
+          4960,
+          4980,
+          5000
         ],
         "loss": [
-          3.7778395492522443,
-          3.7500933858214833,
-          3.7299959620491405
+          3.527653217315674,
+          3.4920926094055176,
+          3.2931206226348877,
+          3.2519121170043945,
+          3.3019721508026123,
+          3.256263256072998,
+          3.2567169666290283,
+          3.213304281234741,
+          3.2430760860443115,
+          3.216886520385742,
+          3.205305814743042,
+          3.21801495552063,
+          3.2492733001708984
         ],
         "eval_loss": [
-          4.043354721069336
+          3.624161410331726
+        ],
+        "eval_steps": [
+          5000
+        ],
+        "eval_elapsed": [
+          2785.43
+        ],
+        "elapsed": [
+          16.61,
+          49.61,
+          290.17,
+          539.12,
+          784.53,
+          1031.91,
+          1278.88,
+          1526.03,
+          1776.66,
+          2024.03,
+          2272.02,
+          2520.74,
+          2768.37
         ]
       },
       "gradient_accumulation_steps": 122,
       "use_scaler": false,
-      "start_time": "2026-09-05T05:47:41.067854Z",
-      "last_update": "2026-09-05T05:57:12.640370Z",
-      "message": "Training.",
-      "tokens_seen": 194887680,
-      "lr": 0.0005945108503395432,
-      "tokens_per_second": 16140.89747683575,
-      "mfu": 0.44991803128551017,
-      "peak_memory_gb": 3.1469688415527344
+      "start_time": "2026-09-06T01:01:15.014818Z",
+      "last_update": "2026-09-06T01:47:40.442391Z",
+      "message": "Evaluated.",
+      "tokens_seen": 1249656832,
+      "lr": 0.00035806710201190007,
+      "tokens_per_second": 20180.510988228325,
+      "mfu": 0.5625198838657914,
+      "peak_memory_gb": 2.843752861022949,
+      "epicycle": "L10/11 ctx512",
+      "loss_guard": {
+        "enabled": true,
+        "best_loss": 3.1172,
+        "best_step": 4969,
+        "running_mean": 3.2062,
+        "running_std": 0.0373,
+        "spikes": 0,
+        "skipped_updates": 0,
+        "rollbacks": 0,
+        "rollback_steps": [],
+        "plateau_since_step": null,
+        "exhausted_at_step": null,
+        "recent_spikes": [],
+        "config": {
+          "enabled": true,
+          "spike_sigma": 4.0,
+          "min_spike_delta": 0.15,
+          "warmup_steps": 50,
+          "skip_bad_updates": true,
+          "max_consecutive_spikes": 4,
+          "rollback": true,
+          "max_rollbacks": 3,
+          "rewarm_steps": 100,
+          "divergence_window": 300,
+          "divergence_ratio": 1.3,
+          "stop_on_divergence": false,
+          "plateau_window": 2000,
+          "plateau_delta": 0.005,
+          "horizon": 50
+        }
+      }
     }
   },
   "entries": [
@@ -135,6 +315,69 @@
       "step": 780,
       "loss": 3.7299959620491405,
       "ppl": 41.55388957865741
+    },
+    {
+      "milestone": 1000,
+      "time": "05 Sep 01:50",
+      "step": 1000,
+      "loss": 3.5481280186137214,
+      "ppl": 36.63027614010059
+    },
+    {
+      "milestone": 1250,
+      "time": "05 Sep 02:53",
+      "step": 1260,
+      "loss": 3.4752510961939076,
+      "ppl": 33.098637577748704
+    },
+    {
+      "milestone": 1500,
+      "time": "05 Sep 03:50",
+      "step": 1500,
+      "loss": 3.415855816153229,
+      "ppl": 31.0868043886284
+    },
+    {
+      "milestone": 2000,
+      "time": "05 Sep 05:47",
+      "step": 2000,
+      "loss": 3.2740906985079654,
+      "ppl": 28.618353084746484
+    },
+    {
+      "milestone": 2500,
+      "time": "05 Sep 07:45",
+      "step": 2500,
+      "loss": 3.2708504219524195,
+      "ppl": 26.856089873359362
+    },
+    {
+      "milestone": 3000,
+      "time": "05 Sep 09:43",
+      "step": 3000,
+      "loss": 3.245354309433796,
+      "ppl": 25.986503317604175
+    },
+    {
+      "milestone": 3500,
+      "time": "05 Sep 13:06",
+      "step": 3500,
+      "loss": 3.1768331215029857,
+      "ppl": 26.991695707055392
+    },
+    {
+      "milestone": 4000,
+      "time": "05 Sep 15:04",
+      "step": 4000,
+      "loss": 3.061413933019169,
+      "ppl": 26.12362009412553
+    },
+    {
+      "milestone": 5000,
+      "time": "05 Sep 20:49",
+      "step": 5000,
+      "loss": 3.2492733001708984,
+      "ppl": 30.674420405894008
     }
   ]
 }
