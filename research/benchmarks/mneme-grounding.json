@@ -1,0 +1,101 @@
+{
+  "settings": {
+    "steps": 200,
+    "seeds": [
+      101,
+      202,
+      303,
+      404,
+      505
+    ],
+    "output": "research/benchmarks/mneme-grounding.json"
+  },
+  "results": [
+    {
+      "seed": 101,
+      "arms": {
+        "answer_only": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 0.0,
+          "unsupported_answer_rate": 1.0,
+          "over_refusal": 0.0
+        },
+        "evidence_withholding": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 1.0,
+          "unsupported_answer_rate": 0.0,
+          "over_refusal": 0.0
+        }
+      }
+    },
+    {
+      "seed": 202,
+      "arms": {
+        "answer_only": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 0.0,
+          "unsupported_answer_rate": 1.0,
+          "over_refusal": 0.0
+        },
+        "evidence_withholding": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 1.0,
+          "unsupported_answer_rate": 0.0,
+          "over_refusal": 0.0
+        }
+      }
+    },
+    {
+      "seed": 303,
+      "arms": {
+        "answer_only": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 0.0,
+          "unsupported_answer_rate": 1.0,
+          "over_refusal": 0.0
+        },
+        "evidence_withholding": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 1.0,
+          "unsupported_answer_rate": 0.0,
+          "over_refusal": 0.0
+        }
+      }
+    },
+    {
+      "seed": 404,
+      "arms": {
+        "answer_only": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 0.0,
+          "unsupported_answer_rate": 1.0,
+          "over_refusal": 0.0
+        },
+        "evidence_withholding": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 1.0,
+          "unsupported_answer_rate": 0.0,
+          "over_refusal": 0.0
+        }
+      }
+    },
+    {
+      "seed": 505,
+      "arms": {
+        "answer_only": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 0.0,
+          "unsupported_answer_rate": 1.0,
+          "over_refusal": 0.0
+        },
+        "evidence_withholding": {
+          "supported_accuracy": 1.0,
+          "unsupported_abstention": 1.0,
+          "unsupported_answer_rate": 0.0,
+          "over_refusal": 0.0
+        }
+      }
+    }
+  ],
+  "limitations": "Synthetic tokenized evidence-present versus missing-evidence task. Held-out question entities, shared answer vocabulary, 256 probes per condition. Training arms receive equal updates and batch sizes; evidence exposure differs by design. Tests curriculum principle, not the natural-language dataset builder or general hallucination elimination. No corrupted, adversarial, contradictory or partially relevant evidence is tested."
+}

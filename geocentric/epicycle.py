@@ -42,6 +42,7 @@ class EpicycleConfig:
     armillary_factored: bool = False  # experimental row/column second moments
     armillary_partitioned: bool = False  # opt-in: split tensors across momentum rings
     equant_sparse_replay: bool = False  # eager selected-row vocabulary backward
+    mneme: bool = False  # experimental bounded rarity-balanced token learning
 
     def __post_init__(self):
         if not 0 < self.deferent_start <= 1:
@@ -78,6 +79,9 @@ class EpicycleConfig:
         if name == "selective":
             return cls(enabled=True, deferent=False, horizon=True, equant=True,
                        armillary=False, equant_sparse_replay=True)
+        if name == "knowledge":
+            return cls(enabled=True, deferent=False, horizon=False, equant=False,
+                       mneme=True)
         if name == "memory":
             # Buy parameters with optimizer state.
             return cls(enabled=True, deferent=True, horizon=True, equant=False, armillary=True)
@@ -88,7 +92,7 @@ class EpicycleConfig:
         if name == "balanced":
             return cls(enabled=True, equant=False, armillary=True, armillary_factored=True,
                        armillary_partitioned=True)
-        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity, balanced, selective.")
+        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity, balanced, selective, knowledge.")
 
 
 class EpicycleScheduler:
@@ -231,7 +235,52 @@ class EpicycleScheduler:
             bits.append(f"ctx{ctx}")
         if self.selecting(step):
             bits.append(f"eq{self.config.equant_keep:.0%}")
+        if self.config.enabled and self.config.mneme:
+            bits.append("mneme")
         return " ".join(bits)
+
+
+def mneme_loss(per_token: torch.Tensor, labels: torch.Tensor, vocab_size: int,
+               equant_keep: Optional[float] = None, equant_trim: float = .02) -> torch.Tensor:
+    """Blend ordinary CE with bounded inverse-frequency CE (MNEME).
+
+    Rarity is measured within this microbatch, not inferred semantic importance.
+    Half the objective remains ordinary CE, or EQUANT's raw-loss band when active.
+    The other half balances token types with at most a 4:1 raw weight ratio.
+    EQUANT's top outliers are excluded from both halves; easier tokens outside
+    its selected band retain a rarity-weighted learning signal. No model state.
+    """
+    losses, targets = per_token.reshape(-1), labels.reshape(-1)
+    if losses.numel() != targets.numel() or vocab_size < 1:
+        raise ValueError("MNEME requires matching losses/labels and positive vocabulary size")
+    valid = targets != -100
+    ordinary = (losses * valid).sum() / valid.sum().clamp_min(1)
+    if equant_keep is not None:
+        band, eligible = _equant_positions(losses, targets, equant_keep, equant_trim)
+        ordinary = losses[band].mean() if band.numel() else losses.sum() * 0
+        valid = torch.zeros_like(valid).scatter_(0, eligible, True)
+        targets = targets.masked_fill(~valid, -100)
+    indices = targets.clamp_min(0)
+    counts = torch.zeros(vocab_size, device=targets.device, dtype=torch.float32)
+    counts.scatter_add_(0, indices, valid.float())
+    frequency = counts.gather(0, indices).clamp_min(1)
+    weights = (counts.amax().clamp_min(1) / frequency).sqrt().clamp_max(4) * valid
+    balanced = (losses * weights).sum() / weights.sum().clamp_min(1)
+    return .5 * (ordinary + balanced)
+
+
+def _equant_positions(per_token, labels, keep, trim):
+    """One raw-loss sort shared by EQUANT and the MNEME combination."""
+    if not 0 < keep <= 1 or not 0 <= trim < 1 or keep + trim > 1:
+        raise ValueError("Require 0 < keep <= 1, 0 <= trim < 1, keep + trim <= 1")
+    positions = (labels.reshape(-1) != -100).nonzero(as_tuple=True)[0]
+    n = positions.numel()
+    if n < 16:
+        return positions, positions
+    n_trim, n_keep = int(n * trim), max(1, int(n * keep))
+    order = per_token.detach()[positions].argsort(descending=True)
+    ordered = positions[order]
+    return ordered[n_trim:n_trim + n_keep], ordered[n_trim:]
 
 
 def equant_loss(
@@ -252,21 +301,8 @@ def equant_loss(
     of numbers. Selecting purely by top-k steers the model straight into them. So the
     top `trim` fraction is discarded and the band below it is kept.
     """
-    valid = labels.reshape(-1) != -100
-    if not 0 < keep <= 1 or not 0 <= trim < 1 or keep + trim > 1:
-        raise ValueError("Require 0 < keep <= 1, 0 <= trim < 1, keep + trim <= 1")
-    losses = per_token[valid]
-    n = losses.numel()
-    if n < 16:
-        return losses.mean() if n else per_token.sum() * 0.0
-
-    n_trim = int(n * trim)
-    n_keep = max(1, int(n * keep))
-    if n_trim + n_keep > n:
-        n_keep = n - n_trim
-    # One sort beats two topk calls and gives the band directly.
-    ordered, _ = torch.sort(losses, descending=True)
-    return ordered[n_trim : n_trim + n_keep].mean()
+    band, _ = _equant_positions(per_token, labels, keep, trim)
+    return per_token[band].mean() if band.numel() else per_token.sum() * 0.0
 
 
 class RingAdamW(Optimizer):

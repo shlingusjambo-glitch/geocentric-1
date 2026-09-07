@@ -1,0 +1,570 @@
+{
+  "settings": {
+    "steps": 400,
+    "seeds": [
+      101,
+      202,
+      303,
+      404,
+      505
+    ],
+    "imbalance": 1.0,
+    "retention_steps": 0,
+    "compare_equant": true,
+    "output": "research/benchmarks/mneme-balanced-control.json"
+  },
+  "torch": "2.8.0",
+  "results": [
+    {
+      "seed": 101,
+      "step": 200,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.09375,
+          "recall_rare": 0.1071428582072258,
+          "recall_common": 0.0,
+          "recall_nll": 3.3454337120056152,
+          "new_prefix": 0.09375,
+          "new_prefix_rare": 0.1071428582072258,
+          "new_prefix_common": 0.0,
+          "new_prefix_nll": 3.2723963260650635,
+          "grammar_nll": 0.005197107791900635,
+          "seconds": 0.4613975840000013
+        },
+        "mneme": {
+          "recall": 0.46875,
+          "recall_rare": 0.4642857015132904,
+          "recall_common": 0.5,
+          "recall_nll": 1.7591285705566406,
+          "new_prefix": 0.46875,
+          "new_prefix_rare": 0.4642857015132904,
+          "new_prefix_common": 0.5,
+          "new_prefix_nll": 1.7503695487976074,
+          "grammar_nll": 0.004948657937347889,
+          "seconds": 0.47074245400000003
+        },
+        "equant": {
+          "recall": 0.25,
+          "recall_rare": 0.2678571343421936,
+          "recall_common": 0.125,
+          "recall_nll": 2.6704256534576416,
+          "new_prefix": 0.265625,
+          "new_prefix_rare": 0.2857142984867096,
+          "new_prefix_common": 0.125,
+          "new_prefix_nll": 2.6660616397857666,
+          "grammar_nll": 0.0025356921833008528,
+          "seconds": 0.4657691200000019
+        },
+        "mneme_equant": {
+          "recall": 0.5,
+          "recall_rare": 0.5178571343421936,
+          "recall_common": 0.375,
+          "recall_nll": 1.770387887954712,
+          "new_prefix": 0.5,
+          "new_prefix_rare": 0.5178571343421936,
+          "new_prefix_common": 0.375,
+          "new_prefix_nll": 1.7664847373962402,
+          "grammar_nll": 0.006573328748345375,
+          "seconds": 0.48653295599999824
+        }
+      }
+    },
+    {
+      "seed": 101,
+      "step": 400,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.59375,
+          "recall_rare": 0.5714285969734192,
+          "recall_common": 0.75,
+          "recall_nll": 1.410735845565796,
+          "new_prefix": 0.578125,
+          "new_prefix_rare": 0.5535714030265808,
+          "new_prefix_common": 0.75,
+          "new_prefix_nll": 1.4071041345596313,
+          "grammar_nll": 0.001045292941853404,
+          "seconds": 0.9245661590000045
+        },
+        "mneme": {
+          "recall": 1.0,
+          "recall_rare": 1.0,
+          "recall_common": 1.0,
+          "recall_nll": 0.13483266532421112,
+          "new_prefix": 1.0,
+          "new_prefix_rare": 1.0,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.13609811663627625,
+          "grammar_nll": 0.0004934820462949574,
+          "seconds": 0.9428537829999983
+        },
+        "equant": {
+          "recall": 0.984375,
+          "recall_rare": 0.9821428656578064,
+          "recall_common": 1.0,
+          "recall_nll": 0.5351642966270447,
+          "new_prefix": 0.984375,
+          "new_prefix_rare": 0.9821428656578064,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.5286900997161865,
+          "grammar_nll": 0.0007965066470205784,
+          "seconds": 0.9359820780000053
+        },
+        "mneme_equant": {
+          "recall": 1.0,
+          "recall_rare": 1.0,
+          "recall_common": 1.0,
+          "recall_nll": 0.0857723131775856,
+          "new_prefix": 1.0,
+          "new_prefix_rare": 1.0,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.08660661429166794,
+          "grammar_nll": 0.0005498919053934515,
+          "seconds": 0.9682725479999936
+        }
+      }
+    },
+    {
+      "seed": 202,
+      "step": 200,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.03125,
+          "recall_rare": 0.0357142873108387,
+          "recall_common": 0.0,
+          "recall_nll": 3.8451013565063477,
+          "new_prefix": 0.046875,
+          "new_prefix_rare": 0.0535714291036129,
+          "new_prefix_common": 0.0,
+          "new_prefix_nll": 3.8589413166046143,
+          "grammar_nll": 0.1550062596797943,
+          "seconds": 0.4712382880000039
+        },
+        "mneme": {
+          "recall": 0.015625,
+          "recall_rare": 0.0,
+          "recall_common": 0.125,
+          "recall_nll": 3.9556357860565186,
+          "new_prefix": 0.015625,
+          "new_prefix_rare": 0.0,
+          "new_prefix_common": 0.125,
+          "new_prefix_nll": 3.9337682723999023,
+          "grammar_nll": 0.004219331778585911,
+          "seconds": 0.4816648859999928
+        },
+        "equant": {
+          "recall": 0.015625,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 0.0,
+          "recall_nll": 4.3482136726379395,
+          "new_prefix": 0.015625,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 0.0,
+          "new_prefix_nll": 4.349642753601074,
+          "grammar_nll": 0.0025248099118471146,
+          "seconds": 0.47762491300000054
+        },
+        "mneme_equant": {
+          "recall": 0.015625,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 0.0,
+          "recall_nll": 4.289210796356201,
+          "new_prefix": 0.015625,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 0.0,
+          "new_prefix_nll": 4.289120197296143,
+          "grammar_nll": 0.0024926785845309496,
+          "seconds": 0.48767636899999545
+        }
+      }
+    },
+    {
+      "seed": 202,
+      "step": 400,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.53125,
+          "recall_rare": 0.5178571343421936,
+          "recall_common": 0.625,
+          "recall_nll": 1.551692008972168,
+          "new_prefix": 0.5,
+          "new_prefix_rare": 0.4821428656578064,
+          "new_prefix_common": 0.625,
+          "new_prefix_nll": 1.5962496995925903,
+          "grammar_nll": 0.0013213984202593565,
+          "seconds": 0.9393708320000025
+        },
+        "mneme": {
+          "recall": 0.578125,
+          "recall_rare": 0.5535714030265808,
+          "recall_common": 0.75,
+          "recall_nll": 1.3425291776657104,
+          "new_prefix": 0.59375,
+          "new_prefix_rare": 0.5714285969734192,
+          "new_prefix_common": 0.75,
+          "new_prefix_nll": 1.341883897781372,
+          "grammar_nll": 0.005827438086271286,
+          "seconds": 0.959548638999987
+        },
+        "equant": {
+          "recall": 0.265625,
+          "recall_rare": 0.2678571343421936,
+          "recall_common": 0.25,
+          "recall_nll": 2.5391128063201904,
+          "new_prefix": 0.265625,
+          "new_prefix_rare": 0.2678571343421936,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 2.5448355674743652,
+          "grammar_nll": 0.0008599400171078742,
+          "seconds": 0.9517526169999995
+        },
+        "mneme_equant": {
+          "recall": 0.28125,
+          "recall_rare": 0.2321428507566452,
+          "recall_common": 0.625,
+          "recall_nll": 2.2480311393737793,
+          "new_prefix": 0.3125,
+          "new_prefix_rare": 0.2678571343421936,
+          "new_prefix_common": 0.625,
+          "new_prefix_nll": 2.248281717300415,
+          "grammar_nll": 0.0007392384577542543,
+          "seconds": 0.9740081959999971
+        }
+      }
+    },
+    {
+      "seed": 303,
+      "step": 200,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.09375,
+          "recall_rare": 0.0714285746216774,
+          "recall_common": 0.25,
+          "recall_nll": 3.1774773597717285,
+          "new_prefix": 0.09375,
+          "new_prefix_rare": 0.0714285746216774,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 3.140286684036255,
+          "grammar_nll": 0.0030878784600645304,
+          "seconds": 0.47321128600001217
+        },
+        "mneme": {
+          "recall": 0.28125,
+          "recall_rare": 0.2321428507566452,
+          "recall_common": 0.625,
+          "recall_nll": 2.2828493118286133,
+          "new_prefix": 0.3125,
+          "new_prefix_rare": 0.2678571343421936,
+          "new_prefix_common": 0.625,
+          "new_prefix_nll": 2.2872726917266846,
+          "grammar_nll": 0.00316605600528419,
+          "seconds": 0.48303396099999674
+        },
+        "equant": {
+          "recall": 0.078125,
+          "recall_rare": 0.0714285746216774,
+          "recall_common": 0.125,
+          "recall_nll": 3.2240476608276367,
+          "new_prefix": 0.046875,
+          "new_prefix_rare": 0.0535714291036129,
+          "new_prefix_common": 0.0,
+          "new_prefix_nll": 3.266401767730713,
+          "grammar_nll": 0.0038717922288924456,
+          "seconds": 0.4780960010000044
+        },
+        "mneme_equant": {
+          "recall": 0.3125,
+          "recall_rare": 0.2678571343421936,
+          "recall_common": 0.625,
+          "recall_nll": 2.2677531242370605,
+          "new_prefix": 0.328125,
+          "new_prefix_rare": 0.2857142984867096,
+          "new_prefix_common": 0.625,
+          "new_prefix_nll": 2.2692062854766846,
+          "grammar_nll": 0.0035019125789403915,
+          "seconds": 0.4881179190000129
+        }
+      }
+    },
+    {
+      "seed": 303,
+      "step": 400,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.546875,
+          "recall_rare": 0.5,
+          "recall_common": 0.875,
+          "recall_nll": 1.555613398551941,
+          "new_prefix": 0.53125,
+          "new_prefix_rare": 0.4821428656578064,
+          "new_prefix_common": 0.875,
+          "new_prefix_nll": 1.5532552003860474,
+          "grammar_nll": 0.0006293982150964439,
+          "seconds": 0.9412531200000327
+        },
+        "mneme": {
+          "recall": 1.0,
+          "recall_rare": 1.0,
+          "recall_common": 1.0,
+          "recall_nll": 0.1638011634349823,
+          "new_prefix": 1.0,
+          "new_prefix_rare": 1.0,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.17856068909168243,
+          "grammar_nll": 0.0008586489711888134,
+          "seconds": 0.9609734209999932
+        },
+        "equant": {
+          "recall": 0.515625,
+          "recall_rare": 0.4642857015132904,
+          "recall_common": 0.875,
+          "recall_nll": 1.6880244016647339,
+          "new_prefix": 0.515625,
+          "new_prefix_rare": 0.4642857015132904,
+          "new_prefix_common": 0.875,
+          "new_prefix_nll": 1.6864337921142578,
+          "grammar_nll": 0.0007429668330587447,
+          "seconds": 0.9534504139999971
+        },
+        "mneme_equant": {
+          "recall": 0.96875,
+          "recall_rare": 0.9821428656578064,
+          "recall_common": 0.875,
+          "recall_nll": 0.377428263425827,
+          "new_prefix": 0.96875,
+          "new_prefix_rare": 0.9821428656578064,
+          "new_prefix_common": 0.875,
+          "new_prefix_nll": 0.3734254837036133,
+          "grammar_nll": 0.0008785247337073088,
+          "seconds": 0.9754574660000142
+        }
+      }
+    },
+    {
+      "seed": 404,
+      "step": 200,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.21875,
+          "recall_rare": 0.2321428507566452,
+          "recall_common": 0.125,
+          "recall_nll": 2.568802833557129,
+          "new_prefix": 0.265625,
+          "new_prefix_rare": 0.2857142984867096,
+          "new_prefix_common": 0.125,
+          "new_prefix_nll": 2.4870502948760986,
+          "grammar_nll": 0.0027242263313382864,
+          "seconds": 0.4734080420000044
+        },
+        "mneme": {
+          "recall": 0.328125,
+          "recall_rare": 0.3392857015132904,
+          "recall_common": 0.25,
+          "recall_nll": 2.041576862335205,
+          "new_prefix": 0.328125,
+          "new_prefix_rare": 0.3392857015132904,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 2.0388004779815674,
+          "grammar_nll": 0.0033836287911981344,
+          "seconds": 0.4847114989999941
+        },
+        "equant": {
+          "recall": 0.234375,
+          "recall_rare": 0.2321428507566452,
+          "recall_common": 0.25,
+          "recall_nll": 2.356849431991577,
+          "new_prefix": 0.203125,
+          "new_prefix_rare": 0.1964285671710968,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 2.402372360229492,
+          "grammar_nll": 0.002378714270889759,
+          "seconds": 0.47846754500000266
+        },
+        "mneme_equant": {
+          "recall": 0.46875,
+          "recall_rare": 0.4642857015132904,
+          "recall_common": 0.5,
+          "recall_nll": 1.8767673969268799,
+          "new_prefix": 0.484375,
+          "new_prefix_rare": 0.4821428656578064,
+          "new_prefix_common": 0.5,
+          "new_prefix_nll": 1.8742384910583496,
+          "grammar_nll": 0.003813917748630047,
+          "seconds": 0.4899371680000293
+        }
+      }
+    },
+    {
+      "seed": 404,
+      "step": 400,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.984375,
+          "recall_rare": 0.9821428656578064,
+          "recall_common": 1.0,
+          "recall_nll": 0.4469684362411499,
+          "new_prefix": 0.984375,
+          "new_prefix_rare": 0.9821428656578064,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.4515147805213928,
+          "grammar_nll": 0.0005680446629412472,
+          "seconds": 0.9410489679999969
+        },
+        "mneme": {
+          "recall": 0.96875,
+          "recall_rare": 0.9642857313156128,
+          "recall_common": 1.0,
+          "recall_nll": 0.2116069197654724,
+          "new_prefix": 0.96875,
+          "new_prefix_rare": 0.9642857313156128,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.22088217735290527,
+          "grammar_nll": 0.0005241743638180196,
+          "seconds": 0.9626343400000028
+        },
+        "equant": {
+          "recall": 0.9375,
+          "recall_rare": 0.9285714030265808,
+          "recall_common": 1.0,
+          "recall_nll": 0.5912641882896423,
+          "new_prefix": 0.9375,
+          "new_prefix_rare": 0.9285714030265808,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.5803738236427307,
+          "grammar_nll": 0.00040301994886249304,
+          "seconds": 0.9540055870000046
+        },
+        "mneme_equant": {
+          "recall": 0.9375,
+          "recall_rare": 0.9285714030265808,
+          "recall_common": 1.0,
+          "recall_nll": 0.4684940278530121,
+          "new_prefix": 0.9375,
+          "new_prefix_rare": 0.9285714030265808,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.4937928020954132,
+          "grammar_nll": 0.0005636747810058296,
+          "seconds": 0.9754080830000227
+        }
+      }
+    },
+    {
+      "seed": 505,
+      "step": 200,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.28125,
+          "recall_rare": 0.3035714328289032,
+          "recall_common": 0.125,
+          "recall_nll": 2.4674854278564453,
+          "new_prefix": 0.21875,
+          "new_prefix_rare": 0.2321428507566452,
+          "new_prefix_common": 0.125,
+          "new_prefix_nll": 2.4934635162353516,
+          "grammar_nll": 0.0026058300863951445,
+          "seconds": 0.47075033499997687
+        },
+        "mneme": {
+          "recall": 0.375,
+          "recall_rare": 0.3928571343421936,
+          "recall_common": 0.25,
+          "recall_nll": 1.943425178527832,
+          "new_prefix": 0.375,
+          "new_prefix_rare": 0.3928571343421936,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 1.9439657926559448,
+          "grammar_nll": 0.00453540263697505,
+          "seconds": 0.48060595700003717
+        },
+        "equant": {
+          "recall": 0.265625,
+          "recall_rare": 0.3035714328289032,
+          "recall_common": 0.0,
+          "recall_nll": 2.3733603954315186,
+          "new_prefix": 0.28125,
+          "new_prefix_rare": 0.3214285671710968,
+          "new_prefix_common": 0.0,
+          "new_prefix_nll": 2.3726046085357666,
+          "grammar_nll": 0.0032171737402677536,
+          "seconds": 0.47566737800001135
+        },
+        "mneme_equant": {
+          "recall": 0.359375,
+          "recall_rare": 0.3392857015132904,
+          "recall_common": 0.5,
+          "recall_nll": 1.7493904829025269,
+          "new_prefix": 0.375,
+          "new_prefix_rare": 0.3571428656578064,
+          "new_prefix_common": 0.5,
+          "new_prefix_nll": 1.766190528869629,
+          "grammar_nll": 0.011520184576511383,
+          "seconds": 0.48636899599999595
+        }
+      }
+    },
+    {
+      "seed": 505,
+      "step": 400,
+      "phase": "acquisition",
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.765625,
+          "recall_rare": 0.75,
+          "recall_common": 0.875,
+          "recall_nll": 0.8939968943595886,
+          "new_prefix": 0.75,
+          "new_prefix_rare": 0.75,
+          "new_prefix_common": 0.75,
+          "new_prefix_nll": 0.9007001519203186,
+          "grammar_nll": 0.007152066566050053,
+          "seconds": 0.9375406719999688
+        },
+        "mneme": {
+          "recall": 0.875,
+          "recall_rare": 0.8928571343421936,
+          "recall_common": 0.75,
+          "recall_nll": 0.5822654366493225,
+          "new_prefix": 0.875,
+          "new_prefix_rare": 0.8928571343421936,
+          "new_prefix_common": 0.75,
+          "new_prefix_nll": 0.588882327079773,
+          "grammar_nll": 0.014224676415324211,
+          "seconds": 0.957283950000015
+        },
+        "equant": {
+          "recall": 0.734375,
+          "recall_rare": 0.75,
+          "recall_common": 0.625,
+          "recall_nll": 1.0445353984832764,
+          "new_prefix": 0.75,
+          "new_prefix_rare": 0.7678571343421936,
+          "new_prefix_common": 0.625,
+          "new_prefix_nll": 1.0415948629379272,
+          "grammar_nll": 0.0011003549443557858,
+          "seconds": 0.9488804590000477
+        },
+        "mneme_equant": {
+          "recall": 0.984375,
+          "recall_rare": 0.9821428656578064,
+          "recall_common": 1.0,
+          "recall_nll": 0.29778507351875305,
+          "new_prefix": 0.984375,
+          "new_prefix_rare": 0.9821428656578064,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 0.296069860458374,
+          "grammar_nll": 0.0008350753923878074,
+          "seconds": 0.9708561689999833
+        }
+      }
+    }
+  ],
+  "limitations": "Synthetic atomic-token facts with an imbalanced exposure distribution. Same architecture, initialization, examples, steps and optimizer per seed. Measures learned fact recall, not unseen facts, reasoning, or real-world truthfulness. New-prefix probes reuse learned facts in unseen prefix combinations."
+}

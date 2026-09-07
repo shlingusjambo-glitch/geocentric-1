@@ -36,6 +36,7 @@ from geocentric.epicycle import (
     EpicycleScheduler,
     build_epicycle_optimizer,
     equant_loss,
+    mneme_loss,
 )
 from geocentric.device import cleanup, enable_fast_math, peak_memory_gb, resolve_dtype, runtime_check, select_device
 from geocentric.model import GPTConfig, GeocentricGPT
@@ -109,7 +110,7 @@ def pretrain(
 
     epi = epicycle if isinstance(epicycle, EpicycleConfig) else EpicycleConfig.preset(epicycle or "off")
     if loss_chunk_size is None:
-        loss_chunk_size = 256 if epi.enabled and (epi.armillary or epi.equant_sparse_replay) else 0
+        loss_chunk_size = 256 if epi.enabled and (epi.armillary or epi.equant_sparse_replay or epi.mneme) else 0
 
     if overwrite_output_dir:
         for pattern in ("*_pretrained*.pt", "model.pt"):
@@ -194,7 +195,9 @@ def pretrain(
     # a large part of why small from-scratch models plateau early.
     model = model.to(device=device, dtype=torch.float32)
     model.loss_chunk_size = loss_chunk_size
-    model.loss_sparse_replay = epi.enabled and epi.equant_sparse_replay
+    model.loss_sparse_replay = epi.enabled and epi.equant_sparse_replay and not epi.mneme
+    if epi.enabled and epi.mneme and epi.equant_sparse_replay:
+        print("MNEME keeps gradients outside EQUANT's band: using ordinary chunked backward, not sparse replay.")
     if gradient_checkpointing:
         # Users commonly add this flag after an OOM on an existing run. Loading
         # checkpoint config must not silently discard that new memory request.
@@ -321,7 +324,8 @@ def pretrain(
     epicycle_sched = EpicycleScheduler(epi, model, total_steps, block_size, start_step=start_step)
     if epi.enabled:
         gears = [n for n, on in (("DEFERENT", epi.deferent), ("HORIZON", epi.horizon),
-                                 ("EQUANT", epi.equant), ("ARMILLARY", epi.armillary)) if on]
+                                 ("EQUANT", epi.equant), ("ARMILLARY", epi.armillary),
+                                 ("MNEME", epi.mneme)) if on]
         print(f"EPICYCLE: {', '.join(gears) or 'no gears'} | {epicycle_sched.status(start_step)}")
         if compiled:
             print("  note: depth and context changes each trigger a torch.compile "
@@ -389,13 +393,20 @@ def pretrain(
                 input_ids, labels = epicycle_sched.prepare_batch(input_ids, labels, ctx)
 
                 selecting = epicycle_sched.selecting(step)
+                balancing = epi.enabled and epi.mneme
                 with autocast:
                     _, loss = active_model(
                         input_ids, labels=labels,
-                        loss_reduction="none" if selecting else "mean",
+                        loss_reduction="none" if selecting or balancing else "mean",
                         return_logits=False,
                     )
-                if selecting:
+                if balancing:
+                    valid = labels.reshape(-1) != -100
+                    reported = (loss.detach() * valid).sum() / valid.sum().clamp_min(1)
+                    loss = mneme_loss(loss, labels, model.config.vocab_size,
+                                      equant_keep=epi.equant_keep if selecting else None,
+                                      equant_trim=epi.equant_trim)
+                elif selecting:
                     # Report the honest mean, train on the trimmed hard band. Showing
                     # the selected loss instead would make the curve jump the moment
                     # selection turns on, for no reason the user could act on.

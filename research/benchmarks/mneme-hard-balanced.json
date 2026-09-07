@@ -1,0 +1,306 @@
+{
+  "settings": {
+    "steps": 1500,
+    "seeds": [
+      101,
+      202,
+      303
+    ],
+    "output": "research/benchmarks/mneme-hard-balanced.json",
+    "balanced": true
+  },
+  "results": [
+    {
+      "seed": 101,
+      "arms": {
+        "answer_only": {
+          "seen_entities": {
+            "supported": {
+              "accuracy": 0.451171875,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "missing": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "irrelevant": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "conflict": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            }
+          },
+          "unseen_entities": {
+            "supported": {
+              "accuracy": 0.46484375,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "missing": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "irrelevant": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "conflict": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            }
+          }
+        },
+        "mixed_evidence": {
+          "seen_entities": {
+            "supported": {
+              "accuracy": 0.20703125,
+              "abstention": 0.5859375,
+              "answer_rate": 0.4140625
+            },
+            "missing": {
+              "accuracy": 1.0,
+              "abstention": 1.0,
+              "answer_rate": 0.0
+            },
+            "irrelevant": {
+              "accuracy": 0.63671875,
+              "abstention": 0.63671875,
+              "answer_rate": 0.36328125
+            },
+            "conflict": {
+              "accuracy": 0.59765625,
+              "abstention": 0.59765625,
+              "answer_rate": 0.40234375
+            }
+          },
+          "unseen_entities": {
+            "supported": {
+              "accuracy": 0.2265625,
+              "abstention": 0.5625,
+              "answer_rate": 0.4375
+            },
+            "missing": {
+              "accuracy": 1.0,
+              "abstention": 1.0,
+              "answer_rate": 0.0
+            },
+            "irrelevant": {
+              "accuracy": 0.60546875,
+              "abstention": 0.60546875,
+              "answer_rate": 0.39453125
+            },
+            "conflict": {
+              "accuracy": 0.57421875,
+              "abstention": 0.57421875,
+              "answer_rate": 0.42578125
+            }
+          }
+        }
+      }
+    },
+    {
+      "seed": 202,
+      "arms": {
+        "answer_only": {
+          "seen_entities": {
+            "supported": {
+              "accuracy": 0.517578125,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "missing": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "irrelevant": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "conflict": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            }
+          },
+          "unseen_entities": {
+            "supported": {
+              "accuracy": 0.513671875,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "missing": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "irrelevant": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "conflict": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            }
+          }
+        },
+        "mixed_evidence": {
+          "seen_entities": {
+            "supported": {
+              "accuracy": 0.169921875,
+              "abstention": 0.67578125,
+              "answer_rate": 0.32421875
+            },
+            "missing": {
+              "accuracy": 1.0,
+              "abstention": 1.0,
+              "answer_rate": 0.0
+            },
+            "irrelevant": {
+              "accuracy": 0.64453125,
+              "abstention": 0.64453125,
+              "answer_rate": 0.35546875
+            },
+            "conflict": {
+              "accuracy": 0.6640625,
+              "abstention": 0.6640625,
+              "answer_rate": 0.3359375
+            }
+          },
+          "unseen_entities": {
+            "supported": {
+              "accuracy": 0.16796875,
+              "abstention": 0.677734375,
+              "answer_rate": 0.322265625
+            },
+            "missing": {
+              "accuracy": 1.0,
+              "abstention": 1.0,
+              "answer_rate": 0.0
+            },
+            "irrelevant": {
+              "accuracy": 0.642578125,
+              "abstention": 0.642578125,
+              "answer_rate": 0.357421875
+            },
+            "conflict": {
+              "accuracy": 0.666015625,
+              "abstention": 0.666015625,
+              "answer_rate": 0.333984375
+            }
+          }
+        }
+      }
+    },
+    {
+      "seed": 303,
+      "arms": {
+        "answer_only": {
+          "seen_entities": {
+            "supported": {
+              "accuracy": 0.513671875,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "missing": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "irrelevant": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "conflict": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            }
+          },
+          "unseen_entities": {
+            "supported": {
+              "accuracy": 0.494140625,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "missing": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "irrelevant": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            },
+            "conflict": {
+              "accuracy": 0.0,
+              "abstention": 0.0,
+              "answer_rate": 1.0
+            }
+          }
+        },
+        "mixed_evidence": {
+          "seen_entities": {
+            "supported": {
+              "accuracy": 0.193359375,
+              "abstention": 0.634765625,
+              "answer_rate": 0.365234375
+            },
+            "missing": {
+              "accuracy": 1.0,
+              "abstention": 1.0,
+              "answer_rate": 0.0
+            },
+            "irrelevant": {
+              "accuracy": 0.69140625,
+              "abstention": 0.69140625,
+              "answer_rate": 0.30859375
+            },
+            "conflict": {
+              "accuracy": 0.65625,
+              "abstention": 0.65625,
+              "answer_rate": 0.34375
+            }
+          },
+          "unseen_entities": {
+            "supported": {
+              "accuracy": 0.212890625,
+              "abstention": 0.6015625,
+              "answer_rate": 0.3984375
+            },
+            "missing": {
+              "accuracy": 1.0,
+              "abstention": 1.0,
+              "answer_rate": 0.0
+            },
+            "irrelevant": {
+              "accuracy": 0.66796875,
+              "abstention": 0.66796875,
+              "answer_rate": 0.33203125
+            },
+            "conflict": {
+              "accuracy": 0.64453125,
+              "abstention": 0.64453125,
+              "answer_rate": 0.35546875
+            }
+          }
+        }
+      }
+    }
+  ],
+  "limitations": "Synthetic atomic tokens, not natural-language claims. Equal batch sizes/steps; curricula differ in supported/unsupported exposure. New sampled contexts and values; unseen entity tokens were excluded from training. All outcomes retained, including over-refusal."
+}

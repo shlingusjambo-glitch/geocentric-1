@@ -20,12 +20,14 @@ def source(tmp_path):
     return directory, corpus, tokenizer
 
 
-@pytest.mark.parametrize("preset", ["speed", "capacity", "selective"])
+@pytest.mark.parametrize("preset", ["speed", "capacity", "selective", "knowledge", "knowledge_selective"])
 def test_pretrain_checkpoint_tokens_and_completed_resume(source, monkeypatch, preset):
     import geocentric.train_pretrain as train
     directory, corpus, tokenizer = source
     monkeypatch.setattr(train, "select_device", lambda: torch.device("cpu"))
-    epi = EpicycleConfig.preset(preset)
+    epi = EpicycleConfig.preset('selective' if preset == 'knowledge_selective' else preset)
+    if preset == 'knowledge_selective':
+        epi.mneme = True
     epi.horizon_start = 8
     kwargs = dict(data_path=str(corpus), output_dir=str(directory), block_size=32,
                   n_layer=4, n_head=2, n_kv_head=1, n_embd=32, batch_size=2,
@@ -47,7 +49,7 @@ def test_pretrain_checkpoint_tokens_and_completed_resume(source, monkeypatch, pr
     for key, tensor in saved["model"].items():
         assert torch.equal(tensor, resumed["model"][key])
     assert resumed["tokens_seen"] == saved["tokens_seen"]
-    if preset == "selective":
+    if preset in ("selective", "knowledge", "knowledge_selective"):
         train.pretrain(**{**kwargs, "max_steps": 4})
         continued = torch.load(path, weights_only=False)
         assert continued["step"] == 4
@@ -273,3 +275,26 @@ def test_sft_best_checkpoint_has_current_resume_metadata(source, monkeypatch):
     state = best['sft_resume_state']
     assert state['epoch'] == 2 and state['next_batch'] == 0
     assert state['best_eval'] == best['eval_loss']
+def test_mneme_grounded_dataset_trains_and_evaluates_through_real_pipeline(source, monkeypatch):
+    import geocentric.train_sft as train
+    import geocentric.device as devices
+    from geocentric.mneme import prepare_grounding_data, check_grounding
+    directory, _, tokenizer = source
+    monkeypatch.setattr(train, 'select_device', lambda: torch.device('cpu'))
+    monkeypatch.setattr(devices, 'select_device', lambda: torch.device('cpu'))
+    model = GeocentricGPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(), block_size=512,
+                                    n_layer=1, n_head=2, n_embd=32))
+    save_checkpoint(model, directory, 1, name='geocentric_pretrained.pt')
+    cases = [dict(question='What turns?', context='The earth turns.', answer='earth'),
+             dict(question='What turns?', context='No information about turning.', answerable=False)]
+    source_path, curriculum = directory/'facts.jsonl', directory/'curriculum.jsonl'
+    source_path.write_text('\n'.join(json.dumps(case) for case in cases))
+    assert prepare_grounding_data(source_path, curriculum) == 3
+    train.sft(str(directory), str(curriculum), epochs=1, gradient_accumulation_steps=1,
+              dtype_name='fp32', loss_guard=False)
+    saved = torch.load(directory/'geocentric_sft.pt', weights_only=False)
+    assert saved['step'] == 3
+    # Pipeline smoke test only: deliberately trained cases are not held-out evidence.
+    report = check_grounding(directory, source_path, directory/'report.json', max_new_tokens=4)
+    assert len(report['results']) == 2 and report['stage'] == 'sft'
+    assert report['data_sha256']

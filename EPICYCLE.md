@@ -1,5 +1,11 @@
 # EPICYCLE: local pretraining efficiency
 
+**MNEME** adds experimental knowledge-balanced learning and a separate grounded
+SFT curriculum. Enable `--epicycle knowledge`, or add `--mneme` to an existing
+preset, including EQUANT presets. See [mechanisms, measured gains, regressions,
+hallucination experiments and commands](docs/MNEME.md). PARALLAX's ASTROLABE probe
+retains its existing name and behavior.
+
 EPICYCLE combines training methods along different resource axes. These are
 engineering contributions to this stack, not a claim that efficient pretraining
 began here. A faster step does not establish better language modeling, and a smaller

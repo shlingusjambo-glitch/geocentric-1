@@ -1,0 +1,183 @@
+{
+  "settings": {
+    "steps": 160,
+    "seeds": [
+      11,
+      29,
+      47
+    ],
+    "output": "research/benchmarks/mneme-pilot.json"
+  },
+  "torch": "2.8.0",
+  "results": [
+    {
+      "seed": 11,
+      "step": 80,
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.03125,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 0.125,
+          "recall_nll": 4.153566360473633,
+          "new_prefix": 0.03125,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 0.125,
+          "new_prefix_nll": 4.181161403656006,
+          "seconds": 0.18649403899999928
+        },
+        "mneme": {
+          "recall": 0.046875,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 0.25,
+          "recall_nll": 4.058880805969238,
+          "new_prefix": 0.046875,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 4.071751117706299,
+          "seconds": 0.2030840439999977
+        }
+      }
+    },
+    {
+      "seed": 11,
+      "step": 160,
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.09375,
+          "recall_rare": 0.0,
+          "recall_common": 0.75,
+          "recall_nll": 3.8216307163238525,
+          "new_prefix": 0.09375,
+          "new_prefix_rare": 0.0,
+          "new_prefix_common": 0.75,
+          "new_prefix_nll": 3.8142478466033936,
+          "seconds": 0.3722075769999994
+        },
+        "mneme": {
+          "recall": 0.140625,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 1.0,
+          "recall_nll": 3.7400147914886475,
+          "new_prefix": 0.140625,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 3.7416112422943115,
+          "seconds": 0.39237107999999776
+        }
+      }
+    },
+    {
+      "seed": 29,
+      "step": 80,
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.0625,
+          "recall_rare": 0.0357142873108387,
+          "recall_common": 0.25,
+          "recall_nll": 3.993098258972168,
+          "new_prefix": 0.0625,
+          "new_prefix_rare": 0.0357142873108387,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 3.993955373764038,
+          "seconds": 0.1827381190000017
+        },
+        "mneme": {
+          "recall": 0.0625,
+          "recall_rare": 0.0,
+          "recall_common": 0.5,
+          "recall_nll": 4.006749629974365,
+          "new_prefix": 0.0625,
+          "new_prefix_rare": 0.0,
+          "new_prefix_common": 0.5,
+          "new_prefix_nll": 3.995466947555542,
+          "seconds": 0.18621604299999994
+        }
+      }
+    },
+    {
+      "seed": 29,
+      "step": 160,
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.109375,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 0.75,
+          "recall_nll": 3.7181384563446045,
+          "new_prefix": 0.09375,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 0.625,
+          "new_prefix_nll": 3.732036590576172,
+          "seconds": 0.36950861900000187
+        },
+        "mneme": {
+          "recall": 0.171875,
+          "recall_rare": 0.0535714291036129,
+          "recall_common": 1.0,
+          "recall_nll": 3.308419704437256,
+          "new_prefix": 0.171875,
+          "new_prefix_rare": 0.0535714291036129,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 3.308767795562744,
+          "seconds": 0.3747917149999991
+        }
+      }
+    },
+    {
+      "seed": 47,
+      "step": 80,
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.046875,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 0.25,
+          "recall_nll": 3.99463152885437,
+          "new_prefix": 0.046875,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 0.25,
+          "new_prefix_nll": 4.003305435180664,
+          "seconds": 0.1860428349999994
+        },
+        "mneme": {
+          "recall": 0.09375,
+          "recall_rare": 0.0357142873108387,
+          "recall_common": 0.5,
+          "recall_nll": 3.9012999534606934,
+          "new_prefix": 0.09375,
+          "new_prefix_rare": 0.0357142873108387,
+          "new_prefix_common": 0.5,
+          "new_prefix_nll": 3.9554977416992188,
+          "seconds": 0.19050337999999867
+        }
+      }
+    },
+    {
+      "seed": 47,
+      "step": 160,
+      "arms": {
+        "ordinary_ce": {
+          "recall": 0.140625,
+          "recall_rare": 0.0357142873108387,
+          "recall_common": 0.875,
+          "recall_nll": 3.6074092388153076,
+          "new_prefix": 0.140625,
+          "new_prefix_rare": 0.0357142873108387,
+          "new_prefix_common": 0.875,
+          "new_prefix_nll": 3.6047956943511963,
+          "seconds": 0.36930579700000177
+        },
+        "mneme": {
+          "recall": 0.140625,
+          "recall_rare": 0.01785714365541935,
+          "recall_common": 1.0,
+          "recall_nll": 3.326688289642334,
+          "new_prefix": 0.140625,
+          "new_prefix_rare": 0.01785714365541935,
+          "new_prefix_common": 1.0,
+          "new_prefix_nll": 3.310981035232544,
+          "seconds": 0.37848679199999946
+        }
+      }
+    }
+  ],
+  "limitations": "Synthetic atomic-token facts with an imbalanced exposure distribution. Same architecture, initialization, examples, steps and optimizer per seed. Measures learned fact recall, not unseen facts, reasoning, or real-world truthfulness. New-prefix probes reuse learned facts in unseen prefix combinations."
+}

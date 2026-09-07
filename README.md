@@ -204,6 +204,12 @@ For your main training machine: [Ubuntu 26.04 / RTX 2060 guide](CUDA.md).
 
 Full design, prior art, and what each gear costs: **[EPICYCLE.md](EPICYCLE.md)**.
 
+**MNEME** is the experimental knowledge-learning extension: bounded rarity weighting
+that composes with EQUANT, plus optional grounded-SFT data preparation and strict
+evidence lookup. [Read the measured recall gains, hallucination-test failures,
+tradeoffs, and usage](docs/MNEME.md). It is opt-in and does not claim hallucination-free
+models or proven gains on general intelligence benchmarks.
+
 ## Watermarking
 
 Text a model generates can be marked so it is attributable later. The scheme is the

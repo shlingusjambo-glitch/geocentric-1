@@ -117,12 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("--no_resume", action="store_true")
     pre.add_argument("--reprepare", action="store_true", help="Re-tokenize the corpus even if shards exist")
     pre.add_argument("--epicycle", default="off",
-                     choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective"],
+                     choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective", "knowledge"],
                      help="EPICYCLE training gears. speed = elastic depth + context; "
                           "quality = adds token selection; memory = adds rotating optimizer "
                           "state so more parameters fit; full = everything.")
     _add_common_training_flags(pre)
     _add_loss_guard_flags(pre)
+    pre.add_argument("--mneme", action="store_true", help="Add MNEME knowledge balancing to the EPICYCLE preset")
     _add_watermark_flags(pre)
 
     ft = sub.add_parser("sft", help="Instruction fine-tune a pretrained checkpoint")
@@ -141,6 +142,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_watermark_flags(ft)
     ft.set_defaults(compile_mode="off", loss_chunk_size=256)
 
+    ground = sub.add_parser("mneme-ground", help="Prepare evidence/abstention pairs for grounded SFT")
+    ground.add_argument("--data", required=True, help="JSON/JSONL with question, answer, context")
+    ground.add_argument("--output", required=True, help="New JSONL output path")
+    ground_check = sub.add_parser("check-grounding", help="Evaluate supported answers and abstention on held-out evidence")
+    ground_check.add_argument("--model_dir", required=True)
+    ground_check.add_argument("--data", required=True)
+    ground_check.add_argument("--output", required=True)
+    ground_check.add_argument("--max_new_tokens", type=int, default=96)
+    strict = sub.add_parser("mneme-answer", help="Return an annotated evidence answer or abstain; no model generation")
+    strict.add_argument("--data", required=True, help="Trusted annotated evidence registry, at most 16 MiB")
+    strict.add_argument("--question", required=True)
+
     pl = sub.add_parser("pipeline", help="Pretrain then SFT in one command")
     pl.add_argument("--data_path", required=True)
     pl.add_argument("--sft_data_path", required=True)
@@ -155,9 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--max_steps", type=int, default=0)
     pl.add_argument("--doc_sep", default=None)
     pl.add_argument("--epicycle", default="off",
-                    choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective"])
+                    choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective", "knowledge"])
     _add_common_training_flags(pl)
     _add_loss_guard_flags(pl)
+    pl.add_argument("--mneme", action="store_true", help="Add MNEME to pretraining, including EQUANT presets")
     _add_watermark_flags(pl)
 
     vis = sub.add_parser("train-vision", help="Make a text model multimodal on image/text pairs")
@@ -357,6 +371,10 @@ def _run_pretrain(args: argparse.Namespace, watermark=None) -> None:
 
     from geocentric.epicycle import EpicycleConfig
     epi = EpicycleConfig.preset(getattr(args, "epicycle", "off"))
+    if getattr(args, "mneme", False):
+        if not epi.enabled:
+            epi = EpicycleConfig.preset("knowledge")
+        epi.mneme = True
     if getattr(args, "equant_sparse_replay", False):
         if not epi.enabled or not epi.equant:
             raise ValueError("--equant_sparse_replay requires quality, selective, or full")
@@ -895,6 +913,18 @@ def main() -> None:
         from geocentric.behavior_eval import check_behavior
         check_behavior(args.model_dir, args.data_path, args.output,
                        compare_dir=args.compare_dir, max_new_tokens=args.max_new_tokens)
+    elif args.command == "mneme-ground":
+        from geocentric.mneme import prepare_grounding_data
+        count = prepare_grounding_data(args.data, args.output)
+        print(f"MNEME: wrote {count:,} evidence/abstention examples to {args.output}")
+    elif args.command == "check-grounding":
+        from geocentric.mneme import check_grounding
+        check_grounding(args.model_dir, args.data, args.output, args.max_new_tokens)
+        print(f"Grounding report saved to {args.output}; inspect individual responses.")
+    elif args.command == "mneme-answer":
+        from geocentric.mneme import load_evidence_registry
+        import json
+        print(json.dumps(load_evidence_registry(args.data).answer(args.question), indent=2, ensure_ascii=False))
     elif args.command == "sft":
         _run_sft(args)
     elif args.command == "pipeline":
