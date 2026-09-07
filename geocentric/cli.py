@@ -908,6 +908,11 @@ def main() -> None:
     elif args.command == "detect":
         _run_detect(args)
     elif args.command in ("chat", "try"):
+        from geocentric.checkpoint import resolve_model_target
+
+        directory, named = resolve_model_target(args.model_dir, args.checkpoint)
+        if named and named != args.checkpoint:
+            print(f"Using checkpoint {named} from {directory}")
         if not args.terminal and (args.command == "try" or args.web):
             from geocentric.web_server import serve
             serve(args)

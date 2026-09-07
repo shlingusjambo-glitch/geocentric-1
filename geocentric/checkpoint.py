@@ -64,7 +64,31 @@ def save_checkpoint(
     return path
 
 
+def resolve_model_target(model_dir: str | Path,
+                         checkpoint_name: Optional[str] = None) -> Tuple[Path, Optional[str]]:
+    """Split a target into (directory, checkpoint name), accepting either form.
+
+    Pointing --model_dir straight at a .pt file is the natural thing to type
+    when one run directory holds several checkpoints, so a file path means
+    "this exact checkpoint" rather than a directory to search inside.
+    """
+    path = Path(model_dir)
+    if path.suffix == ".pt":
+        if not path.is_file():
+            # Reporting "no checkpoint found in <file>" for a mistyped filename
+            # sends the reader looking for a directory that was never meant.
+            raise FileNotFoundError(f"Checkpoint not found: {path}")
+        if checkpoint_name and checkpoint_name != path.name:
+            raise ValueError(
+                f"Conflicting checkpoints: --model_dir names {path.name} but "
+                f"--checkpoint names {checkpoint_name}. Pass only one."
+            )
+        return path.parent, path.name
+    return path, checkpoint_name
+
+
 def _find_checkpoint(model_dir: Path, checkpoint_name: Optional[str]) -> Path:
+    model_dir, checkpoint_name = resolve_model_target(model_dir, checkpoint_name)
     if checkpoint_name:
         candidate = model_dir / checkpoint_name
         if candidate.exists():
@@ -122,7 +146,7 @@ def load_checkpoint(
     if "config" in payload:
         config = GPTConfig(**{k: v for k, v in payload["config"].items() if k in GPTConfig.__annotations__})
     else:
-        config = GPTConfig.load(Path(model_dir) / "config.json")
+        config = GPTConfig.load(path.parent / "config.json")
 
     model = GeocentricGPT(config)
     if config.vision:
@@ -185,6 +209,7 @@ def load_optimizer_state(model_dir: str | Path, checkpoint_name: Optional[str], 
 
 
 def find_tokenizer_path(model_dir: str | Path, extra_dirs: Iterable[str | Path] = ()) -> Path:
+    model_dir, _ = resolve_model_target(model_dir)
     roots = [Path(model_dir), *[Path(d) for d in extra_dirs], Path.cwd()]
     for root in roots:
         candidate = Path(root) / "tokenizer.json"
