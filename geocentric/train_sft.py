@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 import json
+import queue
 import shutil
 import shlex
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +45,41 @@ from geocentric.loss_guard import (
 from geocentric.training_metrics import initialize_training_metrics, update_training_metrics
 from geocentric.watermark import WatermarkConfig
 from tqdm.auto import tqdm
+
+
+def _prefetch(iterable, buffer: int = 2):
+    """Overlap the next batch fetch with the current step's GPU work.
+
+    Disk-backed SFT examples live behind one shared file handle (see
+    DiskExamples), so the DataLoader is forced to num_workers=0: every
+    __getitem__ call blocks the main thread with no compute/IO overlap, which
+    starves the GPU between steps. A background thread iterating the same
+    loader and handing batches over a bounded queue restores that overlap
+    without touching batch order, shuffling, or resumability -- consumption
+    is still strictly sequential, one thread deep.
+    """
+    q: queue.Queue = queue.Queue(maxsize=buffer)
+    sentinel = object()
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            for item in iterable:
+                q.put(item)
+        except BaseException as exc:  # re-raised on the consuming thread
+            errors.append(exc)
+        finally:
+            q.put(sentinel)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    while True:
+        item = q.get()
+        if item is sentinel:
+            if errors:
+                raise errors[0]
+            return
+        yield item
 
 
 def sft(
@@ -334,7 +371,7 @@ def sft(
                                       generator=generator, **loader_kwargs)
             skip_batches = first_batch if epoch == first_epoch else 0
             model.train()
-            for batch_index, batch in enumerate(train_loader):
+            for batch_index, batch in enumerate(_prefetch(train_loader)):
                 if batch_index < skip_batches:
                     continue
                 # Labels are already on CPU: counting here avoids a GPU reduction
