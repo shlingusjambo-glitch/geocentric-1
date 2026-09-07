@@ -306,6 +306,7 @@ class GeocentricGPT(nn.Module):
         # Runtime-only setting; checkpoint architecture and default API stay intact.
         self.loss_chunk_size = 0
         self.loss_sparse_replay = False
+        self.loss_supervised_only = False
         # Optional vision tower, attached by geocentric.vision.attach_vision().
         self.vision = None
 
@@ -366,7 +367,11 @@ class GeocentricGPT(nn.Module):
             from geocentric.streaming_loss import linear_cross_entropy
 
             logits = None
-            if self.loss_sparse_replay and loss_reduction == "none":
+            if self.loss_supervised_only and loss_reduction in {"sum", "mean"}:
+                from geocentric.streaming_loss import supervised_cross_entropy
+                loss = supervised_cross_entropy(x, self.lm_head.weight, labels,
+                                                self.loss_chunk_size, loss_reduction)
+            elif self.loss_sparse_replay and loss_reduction == "none":
                 from geocentric.streaming_loss import sparse_replay_cross_entropy
                 loss = sparse_replay_cross_entropy(x, self.lm_head.weight, labels, self.loss_chunk_size)
             else:

@@ -12,6 +12,26 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 
+def supervised_cross_entropy(hidden, weight, labels, chunk_size=256, reduction="sum"):
+    """Project only supervised positions; attention still sees the whole prompt.
+
+    Intended for SFT sum/mean loss. Ignored prompt/padding rows have zero gradient
+    under ordinary CE, so removing their vocabulary projections preserves the
+    objective. Keep a differentiable zero for entirely masked microbatches.
+    """
+    if reduction not in {"sum", "mean"} or torch.compiler.is_compiling():
+        return linear_cross_entropy(hidden, weight, labels, chunk_size, reduction)
+    flat = hidden.reshape(-1, hidden.size(-1))
+    targets = labels.reshape(-1)
+    if flat.size(0) != targets.numel() or targets.numel() == 0 or chunk_size < 1:
+        raise ValueError("Invalid token shapes or chunk size")
+    selected = (targets != -100).nonzero(as_tuple=True)[0]
+    if selected.numel() == 0:
+        return flat.sum() * 0 + weight.reshape(-1)[:1].sum() * 0
+    return linear_cross_entropy(flat.index_select(0, selected), weight,
+                                targets.index_select(0, selected), chunk_size, reduction)
+
+
 def linear_cross_entropy(hidden, weight, labels, chunk_size=256, reduction="mean"):
     if chunk_size < 1:
         raise ValueError("chunk_size must be positive")

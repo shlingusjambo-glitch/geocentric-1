@@ -1,5 +1,50 @@
 # Training refinement: selected replay, source losses, optional alignment
 
+## Faster SFT vocabulary loss
+
+SFT now projects only assistant-supervised positions into the vocabulary. Prompt
+and padding positions already have label `-100` and contribute no cross-entropy
+gradient. Previously the vocabulary projection and its backward replay still ran
+for them. The transformer continues to process the full conversation, including
+the prompt; only unnecessary loss-head work is removed. All assistant targets,
+assistant masking, optimizer settings and checkpoint parameter shapes are retained.
+Floating-point reduction order can differ. Entirely masked batches return a
+differentiable zero.
+
+This is enabled automatically for eager SFT with positive `--loss_chunk_size`.
+Compiled or dense-loss runs retain the previous implementation. The startup log
+and metrics state whether assistant-only projection is active. The trainer also
+counts supervised tokens on the existing CPU labels and reuses one loss readback,
+removing redundant GPU reductions and synchronization during accumulation.
+
+Matched synthetic full-model SFT updates on Apple M4, PyTorch 2.8/MPS BF16, batch 1,
+context 512, vocabulary 16,000, four layers of width 256, with activation
+checkpointing in both versions (5 warmups, 30 measured updates per arm):
+
+| Prompt fraction | Previous tokens/s | Assistant-only tokens/s | Increase |
+|---|---:|---:|---:|
+| 25% | 10,657 | 11,065 | 3.8% |
+| 50% | 10,652 | 12,270 | 15.2% |
+| 75% | 10,651 | 13,582 | 27.5% |
+
+These are total input tokens/s. Each comparison starts from identical weights,
+uses the same batches, alternates execution order and synchronizes the device.
+They exclude data loading, checkpoint saving and trainer bookkeeping; the separate
+synchronization cleanup is not included in these speed figures. Longer assistant
+answers leave less masked work to remove. These results do not establish a speed
+increase on the user's RTX 2060 baseline of 5,763 tokens/s. Measure the target GPU:
+
+```bash
+python scripts/sft_speed_bench.py --device cuda --prompt_fraction .5 \
+  --output runs/cuda-validation/sft-speed.json
+```
+
+The benchmark uses small synthetic models and does not establish model quality or
+production throughput. Raw timing and loss samples are stored in
+`research/benchmarks/sft-supervised-m4*.json`. Existing runs can resume with the
+same command after updating; default SFT keeps batch 1, activation checkpointing
+on CUDA and the existing GPU allocation cap.
+
 This pass extends EPICYCLE without changing model parameter names or shapes. Existing checkpoints remain loadable and trainable. Existing presets keep their previous defaults. No long training run was started as part of this pass.
 
 ## EQUANT selected replay

@@ -128,6 +128,7 @@ def sft(
         update_training_metrics(out, {"step": model._checkpoint_step,
                                       "message": f"Loaded SFT step {model._checkpoint_step:,}; checking token cache."})
     model.loss_chunk_size = loss_chunk_size
+    model.loss_supervised_only = True
     if drop_watermark:
         model.config.watermark = None
         (out / "watermark.json").unlink(missing_ok=True)
@@ -243,6 +244,8 @@ def sft(
     if start_step:
         print(f"Resuming SFT at step {start_step:,} of {total_steps:,}.", flush=True)
     active_model, compiled = maybe_compile(model, device, compile_mode)
+    print("SFT assistant-only vocabulary projection: " +
+          ("on" if loss_chunk_size > 0 and not compiled else "inactive (requires chunked loss and compile off)"))
     use_scaler = device.type == "cuda" and dtype == torch.float16
     scaler = torch.amp.GradScaler(enabled=use_scaler)
     if resume_name and use_scaler and getattr(model, "_grad_scaler_state", None):
@@ -262,6 +265,7 @@ def sft(
             "learning_rate": learning_rate, "total_steps": total_steps,
             "block_size": block_size, "dtype": str(dtype), "compiled": compiled,
             "loss_chunk_size": loss_chunk_size, "optimizer": type(optimizer).__name__,
+            "supervised_only_projection": loss_chunk_size > 0 and not compiled,
             "optimizer_config": optimizer_config.to_dict() if optimizer_config else None,
             "watermark_identity": (model.config.watermark or {}).get("identity"),
             "loss_guard": LossGuardConfig(enabled=loss_guard).to_dict(),
@@ -333,13 +337,17 @@ def sft(
             for batch_index, batch in enumerate(train_loader):
                 if batch_index < skip_batches:
                     continue
+                # Labels are already on CPU: counting here avoids a GPU reduction
+                # and host synchronization after each backward microbatch.
+                supervised_tokens = int((batch["labels"] != -100).sum())
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
                 labels = batch["labels"].to(device, non_blocking=True)
 
                 with autocast:
                     _, loss = active_model(input_ids, labels=labels, return_logits=False,
                                            loss_reduction="sum")
-                if not torch.isfinite(loss):
+                loss_value = float(loss.detach())
+                if not math.isfinite(loss_value):
                     optimizer.zero_grad(set_to_none=True)
                     micro_count = 0
                     running_loss = 0.0
@@ -352,9 +360,9 @@ def sft(
                 else:
                     scaled.backward()
 
-                running_loss += float(loss.detach())
+                running_loss += loss_value
                 micro_count += 1
-                window_tokens += int((labels != -100).sum())
+                window_tokens += supervised_tokens
                 meter.add(input_ids.numel())
                 if micro_count < gradient_accumulation_steps and batch_index + 1 < len(train_loader):
                     continue

@@ -546,3 +546,9 @@ SFT tokenization is persistently cached and SFT checkpoints resume their model,
 optimizer, scaler, step and token counters. The training watcher therefore retains
 the saved percentage across relaunches. Cache reuse is invalidated automatically
 when the dataset, tokenizer, context or truncation policy changes.
+
+SFT also skips vocabulary projection for masked prompt/padding tokens while keeping
+the full conversation in attention. Synthetic M4 comparisons measured **3.8–27.5%
+higher throughput**, depending on prompt length (15.2% at half prompt, half answer).
+RTX 2060 throughput must be measured separately. This optimization is automatic
+with chunked loss and compilation off; checkpoint resume remains compatible.
