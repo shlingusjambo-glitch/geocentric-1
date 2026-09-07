@@ -234,3 +234,42 @@ def test_sft_interrupted_mid_accumulation_matches_uninterrupted(source, monkeypa
     assert again['step'] == 8
     for name, tensor in actual['model'].items():
         torch.testing.assert_close(again['model'][name], tensor, rtol=0, atol=0)
+@pytest.mark.parametrize('failure', ['forward', 'gradients'])
+def test_sft_failure_status_and_no_phantom_steps(source, monkeypatch, failure):
+    import geocentric.train_sft as train
+    directory, _, tokenizer = source
+    monkeypatch.setattr(train, 'select_device', lambda: torch.device('cpu'))
+    model = GeocentricGPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(), block_size=128,
+                                    n_layer=1, n_head=2, n_embd=32))
+    save_checkpoint(model, directory, 82, name='geocentric_pretrained_best.pt')
+    data = directory/'bad-run.json'
+    data.write_text(json.dumps([{'instruction': 'Question?', 'output': 'Answer.'}] * 3))
+    if failure == 'forward':
+        def fail(*args, **kwargs):
+            raise RuntimeError('injected forward failure')
+        monkeypatch.setattr(GeocentricGPT, 'forward', fail)
+    else:
+        monkeypatch.setattr(torch.nn.utils, 'clip_grad_norm_', lambda *a, **k: torch.tensor(float('inf')))
+    with pytest.raises(RuntimeError):
+        train.sft(str(directory), str(data), epochs=1, dtype_name='fp32',
+                  gradient_accumulation_steps=1, loss_guard=False)
+    metrics = json.loads((directory/'training_metrics.json').read_text())
+    assert metrics['status'] == 'failed' and metrics['step'] == 0
+    assert not (directory/'geocentric_sft.pt').exists()
+
+
+def test_sft_best_checkpoint_has_current_resume_metadata(source, monkeypatch):
+    import geocentric.train_sft as train
+    directory, _, tokenizer = source
+    monkeypatch.setattr(train, 'select_device', lambda: torch.device('cpu'))
+    model = GeocentricGPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(), block_size=128,
+                                    n_layer=1, n_head=2, n_embd=32))
+    save_checkpoint(model, directory, 82, name='geocentric_pretrained_best.pt')
+    data = directory/'eval-run.json'
+    data.write_text(json.dumps([{'instruction': 'Question?', 'output': 'Answer.'}] * 60))
+    train.sft(str(directory), str(data), epochs=1, dtype_name='fp32', eval_ratio=.2,
+              gradient_accumulation_steps=1, loss_guard=False)
+    best = torch.load(directory/'geocentric_sft_best.pt', weights_only=False)
+    state = best['sft_resume_state']
+    assert state['epoch'] == 2 and state['next_batch'] == 0
+    assert state['best_eval'] == best['eval_loss']

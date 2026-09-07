@@ -115,12 +115,14 @@ class DiskExamples:
                 if not isinstance(metadata, dict):
                     metadata = {}
                 offsets = metadata.get("offsets", [])
-                if (metadata.get("version") == CACHE_VERSION and len(offsets) > 1
+                dropped = metadata.get("dropped", 0)
+                if (metadata.get("version") == CACHE_VERSION and isinstance(offsets, list)
+                        and isinstance(dropped, int) and dropped >= 0 and len(offsets) > 1
                         and all(isinstance(x, int) and x >= 0 and x % 8 == 0 for x in offsets)
                         and offsets[0] == 0 and offsets[-1] == self.path.stat().st_size
                         and all(a < b for a, b in zip(offsets, offsets[1:]))):
                     self.offsets = array("Q", offsets)
-                    self.dropped = int(metadata.get("dropped", 0))
+                    self.dropped = dropped
                     self._writer = None
                     self.reused = True
                     return

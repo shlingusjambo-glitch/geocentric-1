@@ -48,38 +48,61 @@ from tqdm.auto import tqdm
 
 
 def _prefetch(iterable, buffer: int = 2):
-    """Overlap the next batch fetch with the current step's GPU work.
-
-    Disk-backed SFT examples live behind one shared file handle (see
-    DiskExamples), so the DataLoader is forced to num_workers=0: every
-    __getitem__ call blocks the main thread with no compute/IO overlap, which
-    starves the GPU between steps. A background thread iterating the same
-    loader and handing batches over a bounded queue restores that overlap
-    without touching batch order, shuffling, or resumability -- consumption
-    is still strictly sequential, one thread deep.
-    """
+    """Bounded, ordered CPU prefetch with cancellation and error propagation."""
+    if buffer < 1:
+        raise ValueError("prefetch buffer must be positive")
     q: queue.Queue = queue.Queue(maxsize=buffer)
     sentinel = object()
     errors: list[BaseException] = []
+    cancelled = threading.Event()
+
+    def put(item):
+        while not cancelled.is_set():
+            try:
+                q.put(item, timeout=0.05)
+                return True
+            except queue.Full:
+                pass
+        return False
 
     def worker() -> None:
         try:
             for item in iterable:
-                q.put(item)
+                if not put(item):
+                    break
         except BaseException as exc:  # re-raised on the consuming thread
             errors.append(exc)
         finally:
-            q.put(sentinel)
+            put(sentinel)
 
-    thread = threading.Thread(target=worker, daemon=True)
+    thread = threading.Thread(target=worker, daemon=True, name="sft-prefetch")
     thread.start()
-    while True:
-        item = q.get()
-        if item is sentinel:
-            if errors:
-                raise errors[0]
-            return
-        yield item
+    try:
+        while True:
+            item = q.get()
+            if item is sentinel:
+                if errors:
+                    raise errors[0]
+                return
+            yield item
+    finally:
+        cancelled.set()
+        # An external filesystem read may block independently; do not hang exit.
+        thread.join(timeout=1.0)
+
+
+def _normalize_gradients(parameters, factor):
+    groups = {}
+    for parameter in parameters:
+        if parameter.grad is not None:
+            grad = parameter.grad
+            groups.setdefault((grad.device, grad.dtype), []).append(grad)
+    for (device, _), gradients in groups.items():
+        if device.type in ("cuda", "cpu") and all(not g.is_sparse for g in gradients):
+            torch._foreach_mul_(gradients, factor)
+        else:
+            for grad in gradients:
+                grad.mul_(factor)
 
 
 def sft(
@@ -116,6 +139,14 @@ def sft(
         raise ValueError("Unknown SFT optimizer")
     if save_every < 0:
         raise ValueError("save_every must be nonnegative")
+    if log_every < 1:
+        raise ValueError("log_every must be positive")
+    if not 0 <= eval_ratio < 1:
+        raise ValueError("eval_ratio must be in [0, 1)")
+    if not math.isfinite(learning_rate) or learning_rate <= 0:
+        raise ValueError("learning_rate must be finite and positive")
+    if not math.isfinite(grad_clip) or grad_clip <= 0:
+        raise ValueError("grad_clip must be finite and positive")
     if batch_size < 1 or epochs < 1:
         raise ValueError("batch_size and epochs must be positive")
     if loss_chunk_size < 0 or gradient_accumulation_steps < 1:
@@ -132,6 +163,8 @@ def sft(
     if metrics_path.is_file():
         try:
             prior_metrics = json.loads(metrics_path.read_text())
+            if not isinstance(prior_metrics, dict):
+                prior_metrics = {}
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -197,7 +230,7 @@ def sft(
     if resume_state and resume_state.get("geometry") != geometry:
         raise ValueError("SFT resume data or training settings changed. Use the original settings "
                          "to resume, or a new output directory for a new fine-tune.")
-    eval_len = max(1, int(len(dataset) * eval_ratio)) if len(dataset) > 50 else 0
+    eval_len = max(1, int(len(dataset) * eval_ratio)) if len(dataset) > 50 and eval_ratio > 0 else 0
     if eval_len:
         train_ds, eval_ds = random_split(
             dataset, [len(dataset) - eval_len, eval_len],
@@ -363,15 +396,19 @@ def sft(
     first_batch = resume_state["next_batch"] if resume_state else (step % steps_per_epoch) * gradient_accumulation_steps
     remember_position(first_epoch, first_batch)
 
+    batches = None
+    pbar = None
     try:
         pbar = tqdm(total=total_steps, initial=min(step, total_steps), desc="sft", dynamic_ncols=True)
         for epoch in range(first_epoch, max(1, epochs) + 1):
+            epoch_start_step = step
             generator = torch.Generator().manual_seed(42 + epoch)
             train_loader = DataLoader(train_ds, shuffle=True, drop_last=False,
                                       generator=generator, **loader_kwargs)
             skip_batches = first_batch if epoch == first_epoch else 0
             model.train()
-            for batch_index, batch in enumerate(_prefetch(train_loader)):
+            batches = _prefetch(train_loader)
+            for batch_index, batch in enumerate(batches):
                 if batch_index < skip_batches:
                     continue
                 # Labels are already on CPU: counting here avoids a GPU reduction
@@ -385,6 +422,14 @@ def sft(
                 with autocast:
                     _, loss = active_model(input_ids, labels=labels, return_logits=False,
                                            loss_reduction="sum", supervised_indices=supervised_indices)
+                scaled = loss / loss_normalizer
+                if use_scaler:
+                    scaler.scale(scaled).backward()
+                else:
+                    scaled.backward()
+
+                # Enqueue backward before the loss readback, avoiding a host
+                # barrier between forward and backward on every microbatch.
                 loss_value = float(loss.detach())
                 if not math.isfinite(loss_value):
                     optimizer.zero_grad(set_to_none=True)
@@ -392,12 +437,6 @@ def sft(
                     running_loss = 0.0
                     window_tokens = 0
                     continue
-
-                scaled = loss / loss_normalizer
-                if use_scaler:
-                    scaler.scale(scaled).backward()
-                else:
-                    scaled.backward()
 
                 running_loss += loss_value
                 micro_count += 1
@@ -442,11 +481,10 @@ def sft(
                 # Losses were summed, then divided by a nominal token budget
                 # before backward to keep FP16 gradients in range. Normalize by actual supervised tokens, including
                 # the final partial window and variable-length assistant responses.
-                for parameter in model.parameters():
-                    if parameter.grad is not None:
-                        parameter.grad.mul_(loss_normalizer / window_tokens)
+                _normalize_gradients(model.parameters(), loss_normalizer / window_tokens)
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                if torch.isfinite(grad_norm):
+                healthy_gradients = bool(torch.isfinite(grad_norm))
+                if healthy_gradients:
                     if use_scaler:
                         scaler.step(optimizer)
                         scaler.update()
@@ -454,6 +492,16 @@ def sft(
                         optimizer.step()
                 elif use_scaler:
                     scaler.update()
+
+                if not healthy_gradients:
+                    optimizer.zero_grad(set_to_none=True)
+                    running_loss = 0.0
+                    micro_count = 0
+                    window_tokens = 0
+                    # No optimizer update occurred: do not advance its schedule
+                    # or count the rejected tokens as trained.
+                    remember_position(epoch, batch_index + 1)
+                    continue
 
                 optimizer.zero_grad(set_to_none=True)
                 step += 1
@@ -484,12 +532,15 @@ def sft(
                                            "sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}})
                     record_checkpoint(out, ckpt_name, step, avg_loss)
 
+            if step == epoch_start_step and skip_batches < len(train_loader):
+                raise RuntimeError("SFT epoch made no optimizer updates; check non-finite losses, gradients and supervision")
             if eval_loader is not None:
                 eval_loss = evaluate(active_model, eval_loader, device, autocast)
                 print(f"\n  epoch {epoch} eval loss {eval_loss:.4f} | ppl {math.exp(min(eval_loss, 20)):.2f}")
                 update_training_metrics(out, {"eval_loss": eval_loss, "message": f"Epoch {epoch} evaluated."})
                 if eval_loss < best_eval:
                     best_eval = eval_loss
+                    remember_position(epoch + 1, 0)
                     save_checkpoint(model, out, step, name=best_name, optimizer=optimizer,
                                     extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft", "loss": avg_loss, "eval_loss": eval_loss})
                     record_checkpoint(out, best_name, step, avg_loss, eval_loss)
@@ -511,7 +562,18 @@ def sft(
         update_training_metrics(out, {"status": "stopped", "step": step, "tokens_seen": tokens_seen,
                                       "message": "Interrupted by user."})
         return
+    except Exception as exc:
+        try:
+            update_training_metrics(out, {"status": "failed", "step": step,
+                                          "message": f"SFT failed: {type(exc).__name__}: {exc}"})
+        except Exception as metrics_error:
+            print(f"Could not record failure status: {metrics_error}", file=sys.stderr)
+        raise
     finally:
+        if batches is not None:
+            batches.close()
+        if pbar is not None:
+            pbar.close()
         cleanup(device)
 
     if not (out / best_name).exists():
@@ -524,20 +586,26 @@ def sft(
 
 @torch.no_grad()
 def evaluate(model, loader: DataLoader, device: torch.device, autocast) -> float:
+    was_training = model.training
     model.eval()
     total = 0.0
     count = 0
-    for batch in loader:
-        selected = (batch["labels"].reshape(-1) != -100).nonzero(as_tuple=True)[0]
-        supervised_tokens = selected.numel()
-        input_ids = batch["input_ids"].to(device, non_blocking=True)
-        labels = batch["labels"].to(device, non_blocking=True)
-        with autocast:
-            _, loss = model(input_ids, labels=labels, return_logits=False, loss_reduction="sum",
-                            supervised_indices=selected.to(device, non_blocking=True))
-        value = float(loss.detach()) if loss is not None else float('nan')
-        if math.isfinite(value):
+    try:
+        for batch in loader:
+            selected = (batch["labels"].reshape(-1) != -100).nonzero(as_tuple=True)[0]
+            supervised_tokens = selected.numel()
+            input_ids = batch["input_ids"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
+            with autocast:
+                _, loss = model(input_ids, labels=labels, return_logits=False, loss_reduction="sum",
+                                supervised_indices=selected.to(device, non_blocking=True))
+            value = float(loss.detach()) if loss is not None else float('nan')
+            if not math.isfinite(value):
+                raise RuntimeError("Non-finite SFT validation loss; refusing to select a best checkpoint")
             total += value
             count += supervised_tokens
-    model.train()
-    return total / max(1, count)
+        if count == 0:
+            raise RuntimeError("SFT validation contains no supervised tokens")
+        return total / count
+    finally:
+        model.train(was_training)

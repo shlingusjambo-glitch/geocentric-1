@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,20 @@ def _metrics_path(output_dir: str | Path) -> Path:
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+
+def _write_metrics(path: Path, payload: dict) -> None:
+    # A watcher or interrupted write must never see half a JSON document.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(payload, stream, indent=2)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def initialize_training_metrics(output_dir: str | Path, phase: str, config: dict[str, Any]) -> None:
@@ -46,7 +61,7 @@ def initialize_training_metrics(output_dir: str | Path, phase: str, config: dict
         "message": "Training started.",
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2))
+    _write_metrics(path, payload)
 
 
 def update_training_metrics(output_dir: str | Path, updates: dict[str, Any]) -> None:
@@ -72,7 +87,7 @@ def update_training_metrics(output_dir: str | Path, updates: dict[str, Any]) -> 
             pass
     metrics.update(updates)
     metrics["last_update"] = _now_iso()
-    path.write_text(json.dumps(metrics, indent=2))
+    _write_metrics(path, metrics)
 
 
 def _elapsed_seconds(metrics: dict[str, Any]) -> float:
