@@ -426,18 +426,20 @@ class SFTDataset(Dataset):
 
 
 def pad_collate(batch: Sequence[Mapping[str, torch.Tensor]], pad_id: int) -> Dict[str, torch.Tensor]:
+    if len(batch) == 1:
+        # Default 6GB SFT microbatch: no padding or copies are needed.
+        return {name: batch[0][name].unsqueeze(0) for name in ("input_ids", "labels")}
     max_len = max(x["input_ids"].numel() for x in batch)
-    input_ids: List[torch.Tensor] = []
-    labels: List[torch.Tensor] = []
+    input_ids = torch.full((len(batch), max_len), pad_id, dtype=torch.long)
+    labels = torch.full((len(batch), max_len), -100, dtype=torch.long)
 
-    for item in batch:
+    for row, item in enumerate(batch):
         ids = item["input_ids"]
         lab = item["labels"]
-        pad_len = max_len - ids.numel()
-        input_ids.append(torch.cat([ids, torch.full((pad_len,), pad_id, dtype=torch.long)]))
-        labels.append(torch.cat([lab, torch.full((pad_len,), -100, dtype=torch.long)]))
+        input_ids[row, :ids.numel()] = ids
+        labels[row, :lab.numel()] = lab
 
-    return {"input_ids": torch.stack(input_ids), "labels": torch.stack(labels)}
+    return {"input_ids": input_ids, "labels": labels}
 
 
 class PadCollate:

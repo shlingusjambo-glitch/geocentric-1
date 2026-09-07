@@ -1,0 +1,10 @@
+{
+  "examples_per_second": {"previous": 43287.38202299332, "mapped": 161181.04783185344},
+  "improvement_percent": 272.3511108762308,
+  "seconds": {
+    "previous": [0.094623417, 0.09430475, 0.093474416, 0.094237625, 0.094892583, 0.094848375, 0.095229375],
+    "mapped": [0.025337125, 0.025314167, 0.025412417, 0.025416208, 0.025363625, 0.025739209, 0.025959292]
+  },
+  "command": "PYTHONPATH=. .venv/bin/python scripts/data_speed_bench.py",
+  "caveat": "M4 CPU loading/collation, warm local file cache, batch one. Not end-to-end training throughput."
+}

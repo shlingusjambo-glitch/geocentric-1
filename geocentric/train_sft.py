@@ -491,12 +491,16 @@ def evaluate(model, loader: DataLoader, device: torch.device, autocast) -> float
     total = 0.0
     count = 0
     for batch in loader:
+        selected = (batch["labels"].reshape(-1) != -100).nonzero(as_tuple=True)[0]
+        supervised_tokens = selected.numel()
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
         with autocast:
-            _, loss = model(input_ids, labels=labels, return_logits=False, loss_reduction="sum")
-        if loss is not None and torch.isfinite(loss):
-            total += float(loss.detach())
-            count += int((labels != -100).sum())
+            _, loss = model(input_ids, labels=labels, return_logits=False, loss_reduction="sum",
+                            supervised_indices=selected.to(device, non_blocking=True))
+        value = float(loss.detach()) if loss is not None else float('nan')
+        if math.isfinite(value):
+            total += value
+            count += supervised_tokens
     model.train()
     return total / max(1, count)

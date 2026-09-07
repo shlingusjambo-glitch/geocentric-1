@@ -1,0 +1,12 @@
+{
+  "device": "mps",
+  "torch": "2.8.0",
+  "tokens_per_second": {"previous": 369.32052441656344, "buffered": 558.0680535041473},
+  "improvement_percent": 51.106699089025454,
+  "seconds": {
+    "previous": [0.1772965, 0.170564292, 0.170950917, 0.173003167, 0.175197542, 0.172405917, 0.17357925, 0.173872334],
+    "buffered": [0.114223125, 0.114686583, 0.1153075, 0.114500125, 0.114676125, 0.116262333, 0.117548541, 0.113337292]
+  },
+  "command": "PYTHONPATH=. .venv/bin/python scripts/generation_speed_bench.py --device mps",
+  "caveat": "Synthetic greedy batch generation including prefill, 64 prompt + 64 output tokens. Not website streaming or NVIDIA measurement."
+}

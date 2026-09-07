@@ -419,13 +419,16 @@ class GeocentricGPT(nn.Module):
         images: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self.eval()
-        caches = [KVCache(max_length=self.config.block_size) for _ in self.blocks]
         prompt_len = input_ids.size(1)
         if prompt_len > self.config.block_size:
             input_ids = input_ids[:, -self.config.block_size :]
             prompt_len = input_ids.size(1)
 
-        generated = input_ids
+        capacity = min(self.config.block_size, prompt_len + max(0, max_new_tokens))
+        caches = [KVCache(max_length=capacity) for _ in self.blocks]
+        history = input_ids.new_empty((input_ids.size(0), capacity))
+        history[:, :prompt_len].copy_(input_ids)
+        generated = history[:, :prompt_len]
         cur = input_ids
         offset = 0
 
@@ -449,7 +452,9 @@ class GeocentricGPT(nn.Module):
                 repetition_penalty, repetition_window, logits_processor,
             )
 
-            generated = torch.cat([generated, next_id], dim=1)
+            length = generated.size(1)
+            history[:, length:length + 1].copy_(next_id)
+            generated = history[:, :length + 1]
             cur = next_id
             if eos_id is not None and bool((next_id == eos_id).all()):
                 break

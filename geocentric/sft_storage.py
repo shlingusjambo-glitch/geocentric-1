@@ -4,6 +4,7 @@ from __future__ import annotations
 from array import array
 import hashlib
 import json
+import os
 from pathlib import Path
 import secrets
 import tempfile
@@ -97,6 +98,8 @@ class DiskExamples:
     """Store compact int32 token pairs and persist a validated offset index."""
 
     def __init__(self, directory=None, key=None):
+        self._mapping = None
+        self._mapping_pid = None
         self.persistent = directory is not None and key is not None
         self._directory = None
         if self.persistent:
@@ -156,14 +159,22 @@ class DiskExamples:
     def __len__(self):
         return len(self.offsets) - 1
 
+    def __getstate__(self):
+        # Spawn workers reopen the mapping rather than serializing its contents.
+        state = self.__dict__.copy()
+        state['_mapping'] = None
+        state['_mapping_pid'] = None
+        return state
+
     def __getitem__(self, index):
         if index < 0:
             index += len(self)
         if not 0 <= index < len(self):
             raise IndexError(index)
         begin, end = self.offsets[index:index + 2]
-        with self.path.open("rb") as stream:
-            stream.seek(begin)
-            values = np.frombuffer(stream.read(end - begin), dtype=np.int32).reshape(2, -1)
+        if self._mapping is None or self._mapping_pid != os.getpid():
+            self._mapping = np.memmap(self.path, dtype=np.int32, mode='r')
+            self._mapping_pid = os.getpid()
+        values = self._mapping[begin // 4:end // 4].reshape(2, -1)
         return {name: torch.from_numpy(values[i].astype(np.int64))
                 for i, name in enumerate(("input_ids", "labels"))}
