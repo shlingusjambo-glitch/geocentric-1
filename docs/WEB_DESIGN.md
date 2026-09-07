@@ -5,10 +5,18 @@ They are visual references, not instructions to reproduce those companies' conte
 authentication screens, or service capabilities.
 
 The interface keeps ChatGPT's narrow conversation column and quiet navigation,
-uses Perplexity's warm-paper reading surface in light mode, and takes Pika's flat
-charcoal contrast for dark mode. The original Geocentric wordmark and mascot remain
-the identity. Thin borders, a system font, consistent spacing and limited sage
-accents connect both themes. No external font or image service is required.
+uses neutral white reading surfaces in light mode and flat charcoal in dark mode.
+The original Geocentric wordmark and mascot remain the identity. Green is confined
+to artwork and restrained interaction accents, rather than tinting every surface.
+The native system font keeps a local application familiar on Ubuntu, Windows and
+macOS without fetching fonts. No external font or image service is required.
+
+The September 7 refinement follows the owner's supplied design guide: a quiet
+writing workspace framed by Geocentric artwork. The composer is the primary
+control, starter prompts are compact buttons rather than a repeated card grid,
+and the decorative welcome eyebrow is removed. Light and dark themes share
+neutral gray tokens. The send control and mobile icon controls have 44px targets;
+mobile history actions remain visible without requiring hover.
 
 The welcome screen uses restrained artwork and context-aware starter prompts.
 Prompts fill an editable draft rather than immediately requesting inference.
@@ -30,6 +38,12 @@ to existing benchmark results. See [artwork provenance and prompt](assets/README
 This pass makes no new GPU speed claim and starts no training runs.
 
 ## Validation
+
+September 7: 11 Node/jsdom tests pass. Actual browser review covered dark desktop
+and light mobile, including 320px and 390px screenshots, theme switching and an
+editable starter prompt. Overflow checks passed at 320, 375, 390, 430, 768, 1024,
+1280, 1440 and 1920px. This is targeted visual review, not a complete accessibility
+audit or a measured Core Web Vitals claim.
 
 The six Node/jsdom unit tests in `tests/web_ui.test.cjs` cover starter prompts,
 conversation/draft restoration, rename/delete/undo, safe Markdown, streaming node

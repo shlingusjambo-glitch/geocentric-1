@@ -207,3 +207,30 @@ This fix passed local regression tests including streaming parsing, disk-backed
 supervision, startup status and compact-optimizer SFT. It has not yet been exercised
 on the reported RTX 2060 desktop. No throughput improvement is claimed; these
 changes prioritize fitting in memory.
+# SFT CPU row selection (September 7 refinement)
+
+SFT now selects supervised token positions while labels are still on CPU and
+transfers those indices with the batch. This removes the data-dependent GPU
+`nonzero` operation from assistant-only vocabulary projection. Prompt tokens
+still participate in attention; labels, loss normalization, optimizer, checkpoint
+format and memory safeguards are unchanged. Existing callers can omit the optional
+indices and retain automatic selection. Compiled loss retains its existing fallback.
+
+A matched 100-update M4/MPS benchmark measured 12,053 → 12,303 input tokens/s,
+approximately **2.1%** above the previous assistant-only implementation. This is a
+small local systems improvement, not an RTX 2060 result or a model-quality claim.
+The previous pass measured 15.2% with 50% prompt tokens against full-row projection;
+these are different baselines and should not be added to predict NVIDIA throughput.
+Raw timings and settings are in `research/benchmarks/sft-cpu-selection-m4.json`.
+
+To measure this change on CUDA without loading or modifying your checkpoint:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/sft_speed_bench.py --device cuda --cpu_selection --steps 100 --output runs/sft-cpu-selection.json
+```
+
+The benchmark uses a small synthetic model, not a full training run. It includes
+batch transfer and CPU selection, excludes tokenization and checkpoint saving,
+and alternates the order of two identically initialized models. FP32 masked-loss
+tests cover empty, partial and full supervision; tied-model gradient tests cover
+CPU/MPS and CUDA when available. CUDA was unavailable on the development machine.

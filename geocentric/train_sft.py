@@ -339,13 +339,15 @@ def sft(
                     continue
                 # Labels are already on CPU: counting here avoids a GPU reduction
                 # and host synchronization after each backward microbatch.
-                supervised_tokens = int((batch["labels"] != -100).sum())
+                supervised_indices = (batch["labels"].reshape(-1) != -100).nonzero(as_tuple=True)[0]
+                supervised_tokens = supervised_indices.numel()
+                supervised_indices = supervised_indices.to(device, non_blocking=True)
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
                 labels = batch["labels"].to(device, non_blocking=True)
 
                 with autocast:
                     _, loss = active_model(input_ids, labels=labels, return_logits=False,
-                                           loss_reduction="sum")
+                                           loss_reduction="sum", supervised_indices=supervised_indices)
                 loss_value = float(loss.detach())
                 if not math.isfinite(loss_value):
                     optimizer.zero_grad(set_to_none=True)

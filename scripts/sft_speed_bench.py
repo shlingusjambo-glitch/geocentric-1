@@ -27,6 +27,8 @@ def main():
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--prompt_fraction', type=float, default=.5)
     parser.add_argument('--chunk_size', type=int, default=256)
+    parser.add_argument('--cpu_selection', action='store_true',
+                        help='Compare CPU selection against existing assistant-only projection')
     parser.add_argument('--output', default='runs/sft-speed.json')
     args = parser.parse_args()
     if args.steps < 1 or args.warmup < 0 or not 0 <= args.prompt_fraction < 1 or args.chunk_size < 1:
@@ -40,21 +42,29 @@ def main():
     baseline.loss_chunk_size = args.chunk_size
     models = {'baseline': baseline, 'supervised_only': copy.deepcopy(baseline)}
     models['supervised_only'].loss_supervised_only = True
+    if args.cpu_selection:
+        baseline.loss_supervised_only = True
     optimizers = {k: torch.optim.AdamW(m.parameters(), lr=1e-4) for k, m in models.items()}
     scalers = {k: torch.amp.GradScaler('cuda', enabled=device.type == 'cuda' and dtype == torch.float16)
                for k in models}
     timings = {k: [] for k in models}
     losses = {k: [] for k in models}
     for step in range(args.steps + args.warmup):
-        x = torch.randint(0, config.vocab_size, (1, config.block_size), device=device)
+        x = torch.randint(0, config.vocab_size, (1, config.block_size))
         labels = x.roll(-1, 1)
         labels[:, :int(config.block_size * args.prompt_fraction)] = -100
         for name in list(models)[::1 if step % 2 == 0 else -1]:
             model, optimizer, scaler = models[name], optimizers[name], scalers[name]
             optimizer.zero_grad(set_to_none=True)
             sync(device); start = time.perf_counter()
+            extra = {}
+            if args.cpu_selection and name == 'supervised_only':
+                selected = (labels.reshape(-1) != -100).nonzero(as_tuple=True)[0]
+                extra['supervised_indices'] = selected.to(device)
+            device_x, device_labels = x.to(device), labels.to(device)
             with torch.autocast(device.type, dtype=dtype, enabled=dtype != torch.float32):
-                loss = model(x, labels=labels, return_logits=False, loss_reduction='mean')[1]
+                loss = model(device_x, labels=device_labels, return_logits=False,
+                             loss_reduction='mean', **extra)[1]
             scaler.scale(loss).backward(); scaler.step(optimizer); scaler.update()
             sync(device); elapsed = time.perf_counter() - start
             if not torch.isfinite(loss):

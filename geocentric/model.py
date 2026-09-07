@@ -339,6 +339,7 @@ class GeocentricGPT(nn.Module):
         images: Optional[torch.Tensor] = None,
         loss_reduction: str = "mean",
         return_logits: bool = True,
+        supervised_indices: Optional[torch.Tensor] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         b, t = input_ids.shape
         if position_offset + t > self.config.block_size:
@@ -370,7 +371,8 @@ class GeocentricGPT(nn.Module):
             if self.loss_supervised_only and loss_reduction in {"sum", "mean"}:
                 from geocentric.streaming_loss import supervised_cross_entropy
                 loss = supervised_cross_entropy(x, self.lm_head.weight, labels,
-                                                self.loss_chunk_size, loss_reduction)
+                                                self.loss_chunk_size, loss_reduction,
+                                                selected=supervised_indices)
             elif self.loss_sparse_replay and loss_reduction == "none":
                 from geocentric.streaming_loss import sparse_replay_cross_entropy
                 loss = sparse_replay_cross_entropy(x, self.lm_head.weight, labels, self.loss_chunk_size)

@@ -12,12 +12,14 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 
-def supervised_cross_entropy(hidden, weight, labels, chunk_size=256, reduction="sum"):
+def supervised_cross_entropy(hidden, weight, labels, chunk_size=256, reduction="sum", selected=None):
     """Project only supervised positions; attention still sees the whole prompt.
 
     Intended for SFT sum/mean loss. Ignored prompt/padding rows have zero gradient
     under ordinary CE, so removing their vocabulary projections preserves the
     objective. Keep a differentiable zero for entirely masked microbatches.
+    Optional selected indices must be the complete ordered nonignored positions
+    in flattened labels, on the same device. The SFT loader constructs these.
     """
     if reduction not in {"sum", "mean"} or torch.compiler.is_compiling():
         return linear_cross_entropy(hidden, weight, labels, chunk_size, reduction)
@@ -25,7 +27,10 @@ def supervised_cross_entropy(hidden, weight, labels, chunk_size=256, reduction="
     targets = labels.reshape(-1)
     if flat.size(0) != targets.numel() or targets.numel() == 0 or chunk_size < 1:
         raise ValueError("Invalid token shapes or chunk size")
-    selected = (targets != -100).nonzero(as_tuple=True)[0]
+    # SFT can select rows on CPU before transfer, avoiding CUDA nonzero's
+    # data-dependent output allocation and associated host synchronization.
+    if selected is None:
+        selected = (targets != -100).nonzero(as_tuple=True)[0]
     if selected.numel() == 0:
         return flat.sum() * 0 + weight.reshape(-1)[:1].sum() * 0
     return linear_cross_entropy(flat.index_select(0, selected), weight,
