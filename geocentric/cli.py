@@ -129,6 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
     ft.add_argument("--model_dir", default="runs/geocentric")
     ft.add_argument("--sft_data_path", required=True)
     ft.add_argument("--output_dir", default=None)
+    ft.add_argument("--optimizer", default="auto", choices=["auto", "adamw", "capacity", "balanced"],
+                    help="auto retains compact EPICYCLE optimizer settings when present")
+    ft.add_argument("--save_every", type=int, default=100, help="Save SFT progress every N updates; 0 saves per epoch")
     ft.add_argument("--epochs", type=int, default=3)
     ft.add_argument("--warmup_ratio", type=float, default=0.03)
     ft.add_argument("--keep_overlong", action="store_true",
@@ -136,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_training_flags(ft)
     _add_loss_guard_flags(ft, resume=False)
     _add_watermark_flags(ft)
+    ft.set_defaults(compile_mode="off", loss_chunk_size=256)
 
     pl = sub.add_parser("pipeline", help="Pretrain then SFT in one command")
     pl.add_argument("--data_path", required=True)
@@ -416,7 +420,9 @@ def _run_sft(args: argparse.Namespace, watermark=None, drop_watermark: bool = Fa
         sft_data_path=args.sft_data_path,
         output_dir=args.output_dir,
         epochs=args.epochs,
-        batch_size=args.batch_size or 8,
+        batch_size=args.batch_size or 1,
+        optimizer_name=getattr(args, "optimizer", "auto"),
+        save_every=getattr(args, "save_every", 100),
         gradient_accumulation_steps=args.gradient_accumulation_steps or 4,
         learning_rate=args.learning_rate or 1e-4,
         warmup_ratio=args.warmup_ratio,
@@ -431,7 +437,7 @@ def _run_sft(args: argparse.Namespace, watermark=None, drop_watermark: bool = Fa
         drop_watermark=drop_watermark,
         loss_guard=not getattr(args, "no_loss_guard", False),
         snapshot_every=getattr(args, "snapshot_every", 100),
-        loss_chunk_size=getattr(args, "loss_chunk_size", None) or 0,
+        loss_chunk_size=256 if getattr(args, "loss_chunk_size", None) is None else args.loss_chunk_size,
     )
 
 
@@ -464,6 +470,12 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     sft_args.epochs = args.sft_epochs
     sft_args.warmup_ratio = 0.03
     sft_args.keep_overlong = False
+    # A pretraining batch can be far too large at SFT's full depth/context.
+    sft_args.batch_size = 1
+    sft_args.compile_mode = "off"
+    sft_args.num_workers = 0
+    if sft_args.loss_chunk_size is None:
+        sft_args.loss_chunk_size = 256
     # Pretraining and fine-tuning want different rates — roughly 6e-4 against random
     # weights, 1e-4 against a trained one. Carrying --learning_rate across would
     # silently fine-tune at the pretraining rate and wreck the checkpoint.

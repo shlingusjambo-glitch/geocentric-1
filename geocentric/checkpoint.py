@@ -111,10 +111,11 @@ def load_checkpoint(
     device: torch.device,
     dtype: torch.dtype = torch.float32,
     checkpoint_name: Optional[str] = None,
+    mmap: bool = False,
     **_ignored: Any,
 ) -> GeocentricGPT:
     path = _find_checkpoint(Path(model_dir), checkpoint_name)
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = torch.load(path, map_location="cpu", weights_only=False, mmap=mmap)
 
     if "config" in payload:
         config = GPTConfig(**{k: v for k, v in payload["config"].items() if k in GPTConfig.__annotations__})
@@ -140,6 +141,7 @@ def load_checkpoint(
         )
     model = model.to(device=device, dtype=dtype if dtype != torch.float16 else torch.float32)
     model._epicycle_state = payload.get("epicycle_state")
+    model._sft_optimizer_config = payload.get("sft_optimizer_config")
     model._training_tokens = payload.get("tokens_seen")
     model._grad_scaler_state = payload.get("grad_scaler")
     model._checkpoint_loss = payload.get("loss")

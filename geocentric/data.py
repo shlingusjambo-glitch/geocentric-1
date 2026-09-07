@@ -352,27 +352,24 @@ class SFTDataset(Dataset):
         path: str | Path,
         block_size: int,
         drop_overlong: bool = True,
+        cache_dir: Optional[str | Path] = None,
     ) -> None:
-        self.examples: List[Dict[str, torch.Tensor]] = []
+        from geocentric.sft_storage import DiskExamples
+        if cache_dir is not None:
+            Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        self.examples = DiskExamples(cache_dir)
         p = _resolve_data_path(path)
-
-        rendered: List[Tuple[str, List[Tuple[int, int]]]] = []
-        for row in self._read_rows(p):
+        self.dropped = 0
+        print(f"SFT: tokenizing {p.name} to temporary disk storage...", flush=True)
+        for number, row in enumerate(self._read_rows(p), 1):
             messages = messages_from_record(row)
             if not messages or not any(m["role"] == "assistant" for m in messages):
                 continue
-            rendered.append(render_chat(messages))
-
-        if not rendered:
-            raise ValueError(f"No usable SFT conversations found in {p}")
-
-        self.dropped = 0
-        # Encode the full conversation in one pass. Encoding prompt and response
-        # separately (as this previously did) shifts byte-level BPE boundaries at
-        # the join, so the model trained on token sequences it never sees at
-        # inference time.
-        encodings = tokenizer.encode_batch([text for text, _ in rendered])
-        for (text, spans), enc in zip(rendered, encodings):
+            text, spans = render_chat(messages)
+            # One whole conversation preserves BPE boundaries and assistant spans.
+            enc = tokenizer.encode(text)
+            if number % 1000 == 0:
+                print(f"  SFT tokenization: {number:,} records, {len(self.examples):,} usable", flush=True)
             ids = enc.ids
             if len(ids) < 2:
                 continue
@@ -402,6 +399,7 @@ class SFTDataset(Dataset):
                 }
             )
 
+        self.examples.finish()
         if not self.examples:
             raise ValueError(f"No usable SFT examples found in {p}")
         if self.dropped:
@@ -412,19 +410,10 @@ class SFTDataset(Dataset):
 
     @staticmethod
     def _read_rows(path: Path) -> Iterator[Mapping[str, object]]:
-        suffix = path.suffix.lower()
-        if suffix == ".jsonl":
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if line.strip():
-                        yield json.loads(line)
-            return
-        if suffix == ".json":
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            for row in payload if isinstance(payload, list) else [payload]:
-                yield row
-            return
-        raise ValueError("SFT data must be .jsonl or .json")
+        if path.suffix.lower() not in (".json", ".jsonl"):
+            raise ValueError("SFT data must be .jsonl or .json")
+        from geocentric.sft_storage import iter_json_records
+        yield from iter_json_records(path)
 
     def __len__(self) -> int:
         return len(self.examples)

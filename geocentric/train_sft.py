@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -46,7 +46,7 @@ def sft(
     sft_data_path: str,
     output_dir: str | None = None,
     epochs: int = 3,
-    batch_size: int = 8,
+    batch_size: int = 1,
     gradient_accumulation_steps: int = 4,
     learning_rate: float = 1e-4,
     warmup_ratio: float = 0.03,
@@ -60,21 +60,31 @@ def sft(
     overwrite_output_dir: bool = False,
     log_every: int = 10,
     num_workers: Optional[int] = None,
-    compile_mode: str = "auto",
+    compile_mode: str = "off",
     drop_overlong: bool = True,
     watermark: WatermarkConfig | None = None,
     drop_watermark: bool = False,
     loss_guard: bool = True,
     snapshot_every: int = 100,
-    loss_chunk_size: int = 0,
+    loss_chunk_size: int = 256,
     checkpoint_name: Optional[str] = None,
+    optimizer_name: str = "auto",
+    save_every: int = 100,
 ) -> None:
+    if optimizer_name not in ("auto", "adamw", "capacity", "balanced"):
+        raise ValueError("Unknown SFT optimizer")
+    if save_every < 0:
+        raise ValueError("save_every must be nonnegative")
+    if batch_size < 1 or epochs < 1:
+        raise ValueError("batch_size and epochs must be positive")
     if loss_chunk_size < 0 or gradient_accumulation_steps < 1:
         raise ValueError("loss_chunk_size must be nonnegative and accumulation positive")
     src = Path(model_dir).expanduser().resolve()
     out = Path(output_dir).expanduser().resolve() if output_dir else src
     out.mkdir(parents=True, exist_ok=True)
 
+    initialize_training_metrics(out, phase="sft", config={"epochs": epochs})
+    update_training_metrics(out, {"status": "preparing", "message": "Loading checkpoint on CPU."})
     device = select_device()
     dtype = resolve_dtype(device, dtype_name)
     enable_fast_math()
@@ -84,13 +94,17 @@ def sft(
         for old in out.glob("*_sft*.pt"):
             old.unlink(missing_ok=True)
 
-    tokenizer = load_tokenizer(find_tokenizer_path(src, extra_dirs=[out]))
+    tokenizer_path = find_tokenizer_path(src, extra_dirs=[out])
+    tokenizer = load_tokenizer(tokenizer_path)
+    if tokenizer_path.resolve() != (out / "tokenizer.json").resolve():
+        shutil.copy2(tokenizer_path, out / "tokenizer.json")
     pad_id = token_id(tokenizer, "<pad>")
 
     preferred = pretrained_checkpoint_name(modelver, best=True)
     model = load_checkpoint(
-        src, device=device, dtype=torch.float32,
+        src, device=torch.device("cpu"), dtype=torch.float32,
         checkpoint_name=checkpoint_name or (preferred if (src / preferred).is_file() else None),
+        mmap=True,
     )
     model.loss_chunk_size = loss_chunk_size
     if drop_watermark:
@@ -104,12 +118,18 @@ def sft(
     elif model.config.watermark:
         print(f"Watermark: inherited from the pretrained checkpoint "
               f"({model.config.watermark.get('identity')!r}). Pass --no_watermark to drop it.")
+    if device.type == "cuda":
+        # Leave headroom for the display/compositor; no allocation-failure probing.
+        torch.cuda.set_per_process_memory_fraction(0.75, device)
+        gradient_checkpointing = True
     model.config.gradient_checkpointing = gradient_checkpointing
     for block in model.blocks:
         block.gradient_checkpointing = gradient_checkpointing
     block_size = model.config.block_size
 
-    dataset = SFTDataset(tokenizer, sft_data_path, block_size=block_size, drop_overlong=drop_overlong)
+    update_training_metrics(out, {"message": "Tokenizing SFT data to temporary disk storage."})
+    dataset = SFTDataset(tokenizer, sft_data_path, block_size=block_size, drop_overlong=drop_overlong,
+                         cache_dir=out / "sft-cache")
     eval_len = max(1, int(len(dataset) * eval_ratio)) if len(dataset) > 50 else 0
     if eval_len:
         train_ds, eval_ds = random_split(
@@ -120,7 +140,40 @@ def sft(
         train_ds, eval_ds = dataset, None
 
     if num_workers is None:
-        num_workers = max(2, min(8, (os.cpu_count() or 2) - 1)) if device.type == "cuda" else 0
+        num_workers = 0
+    if num_workers != 0:
+        raise ValueError("Disk-backed SFT currently requires --num_workers 0")
+    update_training_metrics(out, {"message": "Moving model to training device."})
+    from geocentric.epicycle import EpicycleConfig, build_epicycle_optimizer
+    prior_optimizer = getattr(model, "_sft_optimizer_config", None)
+    inherited = EpicycleConfig.from_dict(prior_optimizer if prior_optimizer is not None else
+                                        (getattr(model, "_epicycle_state", None) or {}).get("config"))
+    optimizer_config = (inherited if optimizer_name == "auto" and inherited.enabled and inherited.armillary
+                        else EpicycleConfig.preset(optimizer_name) if optimizer_name in ("capacity", "balanced") else None)
+    static_bytes = sum(p.numel() for p in model.parameters()) * 16
+    if optimizer_config is not None:
+        probe = build_epicycle_optimizer(model, optimizer_config, learning_rate, weight_decay, quiet=True)
+        second = sum(4 * (p.numel() // p.shape[-1] + p.shape[-1])
+                     if optimizer_config.armillary_factored and p.ndim >= 2 and min(p.shape) > 1
+                     else 2 * p.numel() for p in model.parameters())
+        static_bytes = sum(p.numel() for p in model.parameters()) * 8 + second + 4 * max(probe.ring_load)
+        del probe
+    if device.type == "cuda":
+        free, total = torch.cuda.mem_get_info(device)
+        # FP32 weights + gradients + Adam moments, before any activations/workspace.
+        budget = min(total * .75, max(0, free - 512 * 1024**2))
+        if static_bytes >= budget:
+            update_training_metrics(out, {"status": "failed", "message": "Insufficient VRAM for selected SFT optimizer."})
+            raise RuntimeError("SFT weights/gradients/moments exceed the available VRAM budget. "
+                               "Pretraining with compact EPICYCLE state can fit while full SFT cannot. "
+                               "Try --optimizer capacity, or a smaller model; batch size cannot remove optimizer state.")
+    try:
+        model = model.to(device)
+    except torch.OutOfMemoryError:
+        update_training_metrics(out, {"status": "failed", "message": "Insufficient device memory to load SFT model."})
+        raise
+    print(f"SFT memory settings: batch={batch_size}, loss chunks={loss_chunk_size}, "
+          f"checkpointing={gradient_checkpointing}, workers=0, compile={compile_mode}", flush=True)
     collate = PadCollate(pad_id)
     loader_kwargs = dict(
         batch_size=batch_size, collate_fn=collate, num_workers=num_workers,
@@ -148,7 +201,9 @@ def sft(
             "Instruction following may not take hold. 1e-4 is a reasonable default here."
         )
 
-    optimizer = build_optimizer(model, learning_rate, weight_decay, device_type=device.type)
+    optimizer = (build_epicycle_optimizer(model, optimizer_config, learning_rate, weight_decay)
+                 if optimizer_config is not None else
+                 build_optimizer(model, learning_rate, weight_decay, device_type=device.type))
     active_model, compiled = maybe_compile(model, device, compile_mode)
     use_scaler = device.type == "cuda" and dtype == torch.float16
     scaler = torch.amp.GradScaler(enabled=use_scaler)
@@ -168,7 +223,8 @@ def sft(
             "gradient_accumulation_steps": gradient_accumulation_steps,
             "learning_rate": learning_rate, "total_steps": total_steps,
             "block_size": block_size, "dtype": str(dtype), "compiled": compiled,
-            "loss_chunk_size": loss_chunk_size,
+            "loss_chunk_size": loss_chunk_size, "optimizer": type(optimizer).__name__,
+            "optimizer_config": optimizer_config.to_dict() if optimizer_config else None,
             "watermark_identity": (model.config.watermark or {}).get("identity"),
             "loss_guard": LossGuardConfig(enabled=loss_guard).to_dict(),
         },
@@ -238,7 +294,7 @@ def sft(
                         continue
                     if verdict.action == STOP:
                         save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer,
-                                        extra={"stage": "sft", "loss": avg_loss})
+                                        extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft", "loss": avg_loss})
                         update_training_metrics(out, {"status": "diverged", "message": verdict.reason})
                         return
                     restored = snapshot.restore(model)
@@ -290,6 +346,12 @@ def sft(
                     })
                     meter.reset()
 
+                if save_every and step % save_every == 0 and step < total_steps:
+                    save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer,
+                                    extra={"stage": "sft", "loss": avg_loss,
+                                           "sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}})
+                    record_checkpoint(out, ckpt_name, step, avg_loss)
+
             if eval_loader is not None:
                 eval_loss = evaluate(active_model, eval_loader, device, autocast)
                 print(f"\n  epoch {epoch} eval loss {eval_loss:.4f} | ppl {math.exp(min(eval_loss, 20)):.2f}")
@@ -297,24 +359,29 @@ def sft(
                 if eval_loss < best_eval:
                     best_eval = eval_loss
                     save_checkpoint(model, out, step, name=best_name, optimizer=optimizer,
-                                    extra={"stage": "sft", "loss": avg_loss, "eval_loss": eval_loss})
+                                    extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft", "loss": avg_loss, "eval_loss": eval_loss})
                     record_checkpoint(out, best_name, step, avg_loss, eval_loss)
                     print("  new best SFT checkpoint saved.")
                 meter.reset()
             save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer,
-                            extra={"stage": "sft", "loss": avg_loss})
+                            extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft", "loss": avg_loss})
             record_checkpoint(out, ckpt_name, step, avg_loss)
         pbar.close()
+    except torch.OutOfMemoryError:
+        optimizer.zero_grad(set_to_none=True)
+        update_training_metrics(out, {"status": "failed", "message": "SFT ran out of memory; source checkpoint retained."})
+        raise RuntimeError("SFT ran out of memory. Source checkpoint is unchanged. "
+                           "Use batch_size=1, loss_chunk_size=64, compile off; close the inference server.") from None
     except KeyboardInterrupt:
         print("\n[Ctrl+C] Saving SFT checkpoint before exit...")
-        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"stage": "sft"})
+        save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft"})
         update_training_metrics(out, {"status": "stopped", "message": "Interrupted by user."})
         return
     finally:
         cleanup(device)
 
     if not (out / best_name).exists():
-        save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"stage": "sft"})
+        save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft"})
     update_training_metrics(out, {"status": "complete", "step": step, "message": "SFT complete.",
                                   "loss_guard": guard.summary()})
     print(f"SFT complete after {step:,} steps. Saved to {out}")

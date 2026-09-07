@@ -109,3 +109,50 @@ def test_source_losses_report_even_when_aggregate_window_is_too_short(source, mo
     result=metrics['source_eval'][str(corpus)]
     assert result['loss'] > 0 and result['tokens']==3
     assert metrics['eval_loss'] is None
+
+
+def test_sft_inherits_compact_optimizer_and_writes_startup_status(source,monkeypatch):
+    import geocentric.train_sft as train
+    directory,corpus,tokenizer=source
+    monkeypatch.setattr(train,'select_device',lambda:torch.device('cpu'))
+    model=GeocentricGPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(),block_size=128,
+                                 n_layer=1,n_head=2,n_embd=32))
+    model._epicycle_state={'grown_to':1,'config':EpicycleConfig.preset('capacity').to_dict()}
+    save_checkpoint(model,directory,82,name='geocentric_pretrained_best.pt')
+    data=directory/'sft.json';data.write_text(json.dumps([{'instruction':'What turns?','output':'The earth.'}]))
+    real=train.SFTDataset
+    def preparing(*args,**kwargs):
+        metrics=json.loads((directory/'training_metrics.json').read_text())
+        assert metrics['status']=='preparing' and 'Tokenizing' in metrics['message']
+        return real(*args,**kwargs)
+    monkeypatch.setattr(train,'SFTDataset',preparing)
+    train.sft(str(directory),str(data),epochs=1,dtype_name='fp32',loss_guard=False)
+    saved=torch.load(directory/'geocentric_sft.pt',weights_only=False)
+    assert saved['optimizer_type']=='RingAdamW'
+    assert saved['sft_optimizer_config']['armillary_factored']
+    metrics=json.loads((directory/'training_metrics.json').read_text())
+    assert metrics['config']['batch_size']==1
+    assert metrics['config']['loss_chunk_size']==256
+    assert metrics['config']['compiled'] is False
+
+
+def test_sft_separate_output_has_tokenizer_and_periodic_checkpoint(source,monkeypatch):
+    import geocentric.train_sft as train
+    directory,_,tokenizer=source
+    monkeypatch.setattr(train,'select_device',lambda:torch.device('cpu'))
+    model=GeocentricGPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(),block_size=128,
+                                 n_layer=1,n_head=2,n_embd=32))
+    save_checkpoint(model,directory,82,name='geocentric_pretrained_best.pt')
+    data=directory/'sft.json';data.write_text(json.dumps([
+        {'instruction':'What turns?','output':'The earth.'},
+        {'instruction':'What orbits?','output':'The moon.'}]))
+    seen=[];real=train.save_checkpoint
+    def record(model,out,step,**kwargs):
+        seen.append(step)
+        return real(model,out,step,**kwargs)
+    monkeypatch.setattr(train,'save_checkpoint',record)
+    output=directory.parent/'sft-output'
+    train.sft(str(directory),str(data),output_dir=str(output),epochs=1,
+              gradient_accumulation_steps=1,dtype_name='fp32',loss_guard=False,save_every=1)
+    assert 1 in seen and 2 in seen
+    assert (output/'tokenizer.json').read_bytes()==(directory/'tokenizer.json').read_bytes()

@@ -85,3 +85,57 @@ Use a substantially larger, independent evaluation set for release decisions. Ea
 Exact normalized prompts found in the pair's alignment manifest are rejected as training/evaluation overlap. This does not detect paraphrases or pretraining contamination. Long prompts fail explicitly instead of silently losing context. Existing reports are not overwritten.
 
 No training technique can guarantee zero hallucinations on arbitrary prompts. This pass supplies uncertainty supervision, context-grounded examples, independent responses for review, and per-source loss visibility. It does not establish a measured factuality improvement in your partially pretrained model. Production factual answers still need trustworthy evidence, appropriate abstention, and evaluation on the actual use case.
+
+## SFT desktop-memory fix
+
+An 82%-pretrained checkpoint can be instruction-tuned; finishing pretraining is not a
+memory-safety requirement. Quality may be limited, but that does not explain a
+system freeze. The reported RTX 2060 freeze was not reproduced locally. The code
+contained several independent memory hazards:
+
+- SFT defaulted to batch 8 with dense vocabulary loss, unlike the memory-conscious pretraining path.
+- Dataset preparation held all rendered conversations, tokenizer encodings and tensors in RAM simultaneously; JSON arrays were read wholesale.
+- SFT discarded the compact optimizer choice and always allocated full AdamW state.
+
+SFT now defaults to batch 1, loss chunks of 256, zero loader workers and compilation
+off. CUDA enables activation checkpointing and caps PyTorch allocations at 75% of
+GPU memory. A static weights/gradients/optimizer-state estimate rejects obviously
+oversized configurations before moving the model to CUDA. Activations and external
+CUDA allocations can still cause OOM; this is headroom, not a guarantee against
+NVIDIA driver or desktop failures. Run the CUDA validation on the actual machine.
+
+`--optimizer auto` retains saved compact EPICYCLE settings, or uses AdamW when none
+exist. `--optimizer capacity` explicitly requests factored RingAdamW; `balanced`
+is also available. These approximate optimizers change update behavior relative to
+AdamW. SFT starts fresh optimizer moments, as before; it does not resume pretraining
+momentum. The pipeline uses a separate batch-1, uncompiled SFT phase.
+
+Tokenization now streams JSON/JSONL one conversation at a time and writes int32
+examples to scratch storage under the output directory's `sft-cache/`, rather than
+holding the whole tokenized dataset in RAM or relying on a potentially RAM-backed
+`/tmp`. Only offsets remain resident. Scratch files are removed on normal cleanup;
+a forced kill may leave scratch directories that can be removed after the process
+has stopped. Oversized individual records are rejected. Whole conversation BPE,
+assistant masking and overlong-conversation behavior are retained.
+
+Checkpoint loading uses memory mapping on CPU first, so unused pretraining optimizer
+storage need not be read into RAM. GPU transfer occurs after preparation. A status
+file is created before loading/tokenizing, with explicit startup messages. Periodic
+SFT checkpoints are saved every 100 updates (`--save_every`), in addition to epoch
+checkpoints. An OOM during training records failure without attempting another large
+GPU operation or labeling partially updated weights as a completed model. A new
+output directory receives its tokenizer, making it usable for chat.
+
+Before trying again, stop pretraining and any inference server on the same GPU.
+For an initial conservative attempt, add these to your SFT command:
+
+```bash
+--batch_size 1 --gradient_accumulation_steps 4 --loss_chunk_size 64 \
+--gradient_checkpointing --compile off --num_workers 0 --save_every 25
+```
+
+Use a separate `--output_dir` to keep the pretraining run's metrics separate.
+This fix passed local regression tests including streaming parsing, disk-backed
+supervision, startup status and compact-optimizer SFT. It has not yet been exercised
+on the reported RTX 2060 desktop. No throughput improvement is claimed; these
+changes prioritize fitting in memory.
