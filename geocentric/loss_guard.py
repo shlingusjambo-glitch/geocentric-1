@@ -232,8 +232,13 @@ class LossGuard:
         """
         if step >= self._rewarm_until:
             return 1.0
+        # A rollback can restore weights to a step well before the one that
+        # triggered it, which would otherwise send `remaining` above
+        # rewarm_steps and `progress` negative -- a negative learning rate
+        # that climbs the loss instead of descending it. Clamp to [0, 1].
         remaining = self._rewarm_until - step
         progress = 1.0 - remaining / max(1, self.config.rewarm_steps)
+        progress = min(1.0, max(0.0, progress))
         return 0.1 + 0.9 * progress
 
     # -- reporting ----------------------------------------------------------
