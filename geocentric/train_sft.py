@@ -227,6 +227,9 @@ def sft(
             "optimizer_config": optimizer_config.to_dict() if optimizer_config else None,
             "watermark_identity": (model.config.watermark or {}).get("identity"),
             "loss_guard": LossGuardConfig(enabled=loss_guard).to_dict(),
+            # Nominal, not exact: conversations vary in length, so actual supervised
+            # tokens per step (tracked below as tokens_seen) drift from this budget.
+            "tokens_per_step": loss_normalizer,
         },
     )
 
@@ -239,6 +242,7 @@ def sft(
     snapshot = WeightSnapshot(every=snapshot_every, enabled=loss_guard and snapshot_every > 0)
     meter = Throughput(n_params, block_size, device, dtype)
     step = 0
+    tokens_seen = 0
     best_eval = float("inf")
     running_loss = 0.0
     micro_count = 0
@@ -329,6 +333,7 @@ def sft(
 
                 optimizer.zero_grad(set_to_none=True)
                 step += 1
+                tokens_seen += window_tokens
                 running_loss = 0.0
                 micro_count = 0
                 window_tokens = 0
@@ -342,6 +347,7 @@ def sft(
                         "step": step, "epoch": epoch, "loss": avg_loss, "lr": lr,
                         "perplexity": math.exp(min(avg_loss, 20)),
                         "tokens_per_second": tps, "loss_guard": guard.summary(),
+                        "tokens_seen": tokens_seen,
                         "message": "Training.",
                     })
                     meter.reset()
