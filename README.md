@@ -541,3 +541,8 @@ EPICYCLE's opt-in `selective` preset skips backward vocabulary replay for tokens
 `geocentric align-safety` is a separate post-SFT command that asks before training, preserves an unchanged original, and writes a second model trained on reviewed harm-focused refusal, benign-helpfulness and uncertainty examples. `geocentric check-behavior` compares held-out responses and short-answer factual scores. These are evaluation and training tools, not a guarantee of zero hallucinations.
 
 See [training refinement usage, measurements, data format and limitations](docs/TRAINING_REFINEMENT.md).
+
+SFT tokenization is persistently cached and SFT checkpoints resume their model,
+optimizer, scaler, step and token counters. The training watcher therefore retains
+the saved percentage across relaunches. Cache reuse is invalidated automatically
+when the dataset, tokenizer, context or truncation policy changes.

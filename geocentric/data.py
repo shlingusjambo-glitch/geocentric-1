@@ -354,13 +354,16 @@ class SFTDataset(Dataset):
         drop_overlong: bool = True,
         cache_dir: Optional[str | Path] = None,
     ) -> None:
-        from geocentric.sft_storage import DiskExamples
-        if cache_dir is not None:
-            Path(cache_dir).mkdir(parents=True, exist_ok=True)
-        self.examples = DiskExamples(cache_dir)
         p = _resolve_data_path(path)
+        from geocentric.sft_storage import DiskExamples, cache_fingerprint
+        cache_key = cache_fingerprint(p, tokenizer, block_size, drop_overlong) if cache_dir else None
+        self.examples = DiskExamples(cache_dir, cache_key)
+        if self.examples.reused:
+            self.dropped = self.examples.dropped
+            print(f"SFT: reused {len(self.examples):,} cached tokenized conversations.", flush=True)
+            return
         self.dropped = 0
-        print(f"SFT: tokenizing {p.name} to temporary disk storage...", flush=True)
+        print(f"SFT: tokenizing {p.name} to persistent disk cache...", flush=True)
         for number, row in enumerate(self._read_rows(p), 1):
             messages = messages_from_record(row)
             if not messages or not any(m["role"] == "assistant" for m in messages):
@@ -399,7 +402,7 @@ class SFTDataset(Dataset):
                 }
             )
 
-        self.examples.finish()
+        self.examples.finish(self.dropped)
         if not self.examples:
             raise ValueError(f"No usable SFT examples found in {p}")
         if self.dropped:

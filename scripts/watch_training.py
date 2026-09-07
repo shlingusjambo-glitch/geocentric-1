@@ -366,7 +366,7 @@ def control_footer(pid: int | None, notice: str, resume_cmd: str = "", status: s
             out.append("")
             out.append("  Resume from the last checkpoint with:")
             out.append(f"    \033[36m{resume_cmd}\033[0m" if resume_cmd
-                       else "    (rerun the pretrain command you started with)")
+                       else "    (rerun the same training command)")
         out.append("")
         out.append("  [q] quit watching")
     else:

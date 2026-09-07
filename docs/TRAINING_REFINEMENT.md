@@ -111,12 +111,15 @@ AdamW. SFT starts fresh optimizer moments, as before; it does not resume pretrai
 momentum. The pipeline uses a separate batch-1, uncompiled SFT phase.
 
 Tokenization now streams JSON/JSONL one conversation at a time and writes int32
-examples to scratch storage under the output directory's `sft-cache/`, rather than
-holding the whole tokenized dataset in RAM or relying on a potentially RAM-backed
-`/tmp`. Only offsets remain resident. Scratch files are removed on normal cleanup;
-a forced kill may leave scratch directories that can be removed after the process
-has stopped. Oversized individual records are rejected. Whole conversation BPE,
-assistant masking and overlong-conversation behavior are retained.
+examples to a persistent cache under the output directory's `sft-cache/`, rather
+than holding the whole tokenized dataset in RAM or relying on a potentially
+RAM-backed `/tmp`. Only offsets remain resident. The cache key hashes the exact
+dataset contents, tokenizer, context size, cache format and truncation policy.
+Relaunching the same SFT job reuses its tokenized data; changing any of those inputs
+creates a new cache entry. The source file must still be read once to verify its
+content hash, but it is not tokenized again. Oversized individual records are
+rejected. Whole-conversation BPE, assistant masking and overlong-conversation
+behavior are retained.
 
 Checkpoint loading uses memory mapping on CPU first, so unused pretraining optimizer
 storage need not be read into RAM. GPU transfer occurs after preparation. A status
@@ -125,6 +128,26 @@ SFT checkpoints are saved every 100 updates (`--save_every`), in addition to epo
 checkpoints. An OOM during training records failure without attempting another large
 GPU operation or labeling partially updated weights as a completed model. A new
 output directory receives its tokenizer, making it usable for chat.
+
+Rerunning the same SFT command now resumes `*_sft.pt` by default. It restores model
+weights, optimizer state, gradient-scaler state, update count and supervised-token
+count. New checkpoints also store the epoch/batch cursor, RNG state and loss-guard
+statistics. Each epoch uses a deterministic shuffle, so checkpoints written by this
+version can skip already-consumed batches and repeat only an unfinished accumulation
+window when resuming. Changed data or batch/accumulation settings are rejected for
+resume; use a new output directory to start a different fine-tuning experiment.
+Checkpoints from an
+older version retain their weights, optimizer and displayed step exactly, but their
+old random data order was not recorded; the first upgrade resume may revisit or
+skip some examples within that one epoch. The watcher preserves the saved step and
+percentage during cache checking and prints the saved SFT command. For example,
+step 2,600 of 172,998 remains 1.5% after relaunch rather than resetting to zero.
+The watcher is read-only unless you explicitly use its pause/stop controls. Quitting
+and reopening it cannot change model weights. Before this fix, restarting the SFT
+command did reload the pretrained model and reset its progress, even when an SFT
+checkpoint existed. A loss-guard weight rollback no longer rewinds the progress
+counter. Stopping forcibly can still lose updates since the last saved checkpoint;
+resume displays the saved step rather than claiming those unsaved updates survived.
 
 Before trying again, stop pretraining and any inference server on the same GPU.
 For an initial conservative attempt, add these to your SFT command:

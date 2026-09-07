@@ -123,7 +123,7 @@ def test_sft_inherits_compact_optimizer_and_writes_startup_status(source,monkeyp
     real=train.SFTDataset
     def preparing(*args,**kwargs):
         metrics=json.loads((directory/'training_metrics.json').read_text())
-        assert metrics['status']=='preparing' and 'Tokenizing' in metrics['message']
+        assert metrics['status']=='preparing' and 'cache' in metrics['message']
         return real(*args,**kwargs)
     monkeypatch.setattr(train,'SFTDataset',preparing)
     train.sft(str(directory),str(data),epochs=1,dtype_name='fp32',loss_guard=False)
@@ -156,3 +156,81 @@ def test_sft_separate_output_has_tokenizer_and_periodic_checkpoint(source,monkey
               gradient_accumulation_steps=1,dtype_name='fp32',loss_guard=False,save_every=1)
     assert 1 in seen and 2 in seen
     assert (output/'tokenizer.json').read_bytes()==(directory/'tokenizer.json').read_bytes()
+
+
+def test_sft_resume_restores_step_optimizer_tokens_and_progress(source, monkeypatch, capsys):
+    import geocentric.train_sft as train
+    directory, _, tokenizer = source
+    monkeypatch.setattr(train, 'select_device', lambda: torch.device('cpu'))
+    model=GeocentricGPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(), block_size=128,
+                                 n_layer=1, n_head=2, n_embd=32))
+    save_checkpoint(model,directory,82,name='geocentric_pretrained_best.pt')
+    data=directory/'sft.json';data.write_text(json.dumps([
+        {'instruction':'One?','output':'First.'},
+        {'instruction':'Two?','output':'Second.'},
+        {'instruction':'Three?','output':'Third.'},
+        {'instruction':'Four?','output':'Fourth.'}]))
+    kwargs=dict(model_dir=str(directory),sft_data_path=str(data),batch_size=1,
+                gradient_accumulation_steps=1,dtype_name='fp32',loss_guard=False,save_every=1)
+    train.sft(**kwargs,epochs=1)
+    first=torch.load(directory/'geocentric_sft.pt',weights_only=False)
+    first_metrics=json.loads((directory/'training_metrics.json').read_text())
+    assert first['step']==4 and first_metrics['step']==4
+    train.sft(**kwargs,epochs=2)
+    second=torch.load(directory/'geocentric_sft.pt',weights_only=False)
+    metrics=json.loads((directory/'training_metrics.json').read_text())
+    assert second['step']==8 and metrics['step']==8
+    assert second['tokens_seen'] > first['tokens_seen']
+    output=capsys.readouterr().out
+    assert 'reused 4 cached' in output
+    assert 'Resuming SFT at step 4 of 8' in output
+
+
+def test_sft_interrupted_mid_accumulation_matches_uninterrupted(source, monkeypatch):
+    import geocentric.train_sft as train
+    directory, _, tokenizer = source
+    monkeypatch.setattr(train, 'select_device', lambda: torch.device('cpu'))
+    model = GeocentricGPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(), block_size=128,
+                                    n_layer=1, n_head=2, n_embd=32, dropout=.2))
+    save_checkpoint(model, directory, 82, name='geocentric_pretrained_best.pt')
+    data = directory / 'resume.json'
+    data.write_text(json.dumps([{'instruction':f'Question {i}', 'output':f'Answer {i}.'}
+                                for i in range(7)]))
+    kwargs = dict(model_dir=str(directory), sft_data_path=str(data), epochs=2,
+                  batch_size=1, gradient_accumulation_steps=2, dtype_name='fp32',
+                  loss_guard=False, save_every=1, log_every=1)
+    complete_dir, interrupted_dir = directory.parent/'complete', directory.parent/'interrupted'
+    torch.manual_seed(777)
+    train.sft(**kwargs, output_dir=str(complete_dir))
+    real_forward = GeocentricGPT.forward
+    calls = 0
+    def interrupt(model, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise KeyboardInterrupt
+        return real_forward(model, *args, **kwargs)
+    monkeypatch.setattr(GeocentricGPT, 'forward', interrupt)
+    torch.manual_seed(777)
+    train.sft(**kwargs, output_dir=str(interrupted_dir))
+    stopped = torch.load(interrupted_dir/'geocentric_sft.pt', weights_only=False)
+    assert stopped['step'] == 1
+    assert stopped['sft_resume_state']['next_batch'] == 2
+    assert json.loads((interrupted_dir/'training_metrics.json').read_text())['step'] == 1
+    monkeypatch.setattr(GeocentricGPT, 'forward', real_forward)
+    train.sft(**kwargs, output_dir=str(interrupted_dir))
+    expected = torch.load(complete_dir/'geocentric_sft.pt', weights_only=False)
+    actual = torch.load(interrupted_dir/'geocentric_sft.pt', weights_only=False)
+    assert expected['step'] == actual['step'] == 8
+    assert expected['tokens_seen'] == actual['tokens_seen']
+    for name, tensor in expected['model'].items():
+        torch.testing.assert_close(actual['model'][name], tensor, rtol=0, atol=0)
+    for key, state in expected['optimizer']['state'].items():
+        for name, value in state.items():
+            torch.testing.assert_close(actual['optimizer']['state'][key][name], value, rtol=0, atol=0)
+    # A completed run is a no-op on the weights when relaunched with the same budget.
+    train.sft(**kwargs, output_dir=str(interrupted_dir))
+    again = torch.load(interrupted_dir/'geocentric_sft.pt', weights_only=False)
+    assert again['step'] == 8
+    for name, tensor in actual['model'].items():
+        torch.testing.assert_close(again['model'][name], tensor, rtol=0, atol=0)

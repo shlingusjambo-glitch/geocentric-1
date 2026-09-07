@@ -23,8 +23,7 @@ def test_reject_malformed_array(tmp_path,text):
     with pytest.raises(ValueError):list(iter_json_records(path))
 
 
-def test_disk_dataset_keeps_supervision_and_cleans_scratch(tmp_path):
-    import gc
+def test_disk_dataset_persists_and_reuses_matching_cache(tmp_path, capsys):
     tok=train_byte_bpe_tokenizer(['Question answer Hello world.']*5,tmp_path/'tokenizer.json',vocab_size=300)
     path=tmp_path/'sft.json';path.write_text(json.dumps([
         {'instruction':'Question','output':'Hello world.'},
@@ -37,5 +36,21 @@ def test_disk_dataset_keeps_supervision_and_cleans_scratch(tmp_path):
     assert (first['labels']==-100).any() and (first['labels']!=-100).any()
     cache=dataset.examples.path
     assert cache.exists()
-    del dataset;gc.collect()
-    assert not cache.exists()
+    del dataset
+    reused=SFTDataset(tok,path,128,cache_dir=tmp_path/'cache')
+    assert reused.examples.reused
+    assert reused[0]['input_ids'].shape == first['input_ids'].shape
+    assert 'reused 2 cached' in capsys.readouterr().out
+    assert cache.exists()
+
+
+def test_cache_invalidates_when_data_changes(tmp_path):
+    tok=train_byte_bpe_tokenizer(['Question answer.']*5,tmp_path/'tokenizer.json',vocab_size=300)
+    path=tmp_path/'sft.json'
+    path.write_text(json.dumps([{'instruction':'Question','output':'answer'}]))
+    first=SFTDataset(tok,path,128,cache_dir=tmp_path/'cache')
+    first_path=first.examples.path
+    path.write_text(json.dumps([{'instruction':'Different','output':'answer'}]))
+    second=SFTDataset(tok,path,128,cache_dir=tmp_path/'cache')
+    assert not second.examples.reused
+    assert second.examples.path != first_path

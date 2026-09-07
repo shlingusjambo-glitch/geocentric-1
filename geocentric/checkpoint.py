@@ -44,6 +44,8 @@ def save_checkpoint(
         payload["epicycle_state"] = model._epicycle_state
     if hasattr(model, "_training_tokens"):
         payload["tokens_seen"] = model._training_tokens
+    if getattr(model, "_sft_resume_state", None) is not None:
+        payload["sft_resume_state"] = model._sft_resume_state
     if hasattr(model, "_grad_scaler"):
         payload["grad_scaler"] = model._grad_scaler.state_dict()
     # Optimizer state makes a resumed run continue with its real Adam moments and
@@ -142,9 +144,16 @@ def load_checkpoint(
     model = model.to(device=device, dtype=dtype if dtype != torch.float16 else torch.float32)
     model._epicycle_state = payload.get("epicycle_state")
     model._sft_optimizer_config = payload.get("sft_optimizer_config")
+    model._sft_resume_state = payload.get("sft_resume_state")
+    saved_optimizer_type = payload.get("optimizer_type")
+    if saved_optimizer_type is None and "optimizer" in payload:
+        states = payload["optimizer"].get("state", {}).values()
+        saved_optimizer_type = "RingAdamW" if any("ring" in state for state in states) else "AdamW"
+    model._checkpoint_optimizer_type = saved_optimizer_type
     model._training_tokens = payload.get("tokens_seen")
     model._grad_scaler_state = payload.get("grad_scaler")
     model._checkpoint_loss = payload.get("loss")
+    model._checkpoint_step = int(payload.get("step", 0))
     print(f"Loaded checkpoint {path.name} (step {payload.get('step', 0):,})")
     if config.watermark:
         print(f"  watermarked as {config.watermark.get('identity')!r}")
@@ -154,12 +163,12 @@ def load_checkpoint(
     return model
 
 
-def load_optimizer_state(model_dir: str | Path, checkpoint_name: Optional[str], optimizer) -> int:
+def load_optimizer_state(model_dir: str | Path, checkpoint_name: Optional[str], optimizer, *, mmap=False) -> int:
     try:
         path = _find_checkpoint(Path(model_dir), checkpoint_name)
     except FileNotFoundError:
         return 0
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = torch.load(path, map_location="cpu", weights_only=False, mmap=mmap)
     if "optimizer" in payload:
         saved_type = payload.get("optimizer_type")
         if saved_type is None:

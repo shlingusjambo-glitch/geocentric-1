@@ -79,3 +79,19 @@ def test_watcher_displays_distinct_source_losses(tmp_path,monkeypatch):
     display=watch_training.render(tmp_path,[],[])
     assert 'html.txt' in display and '0.5000' in display
     assert 'language.txt' in display and '3.2000' in display
+
+
+def test_watcher_keeps_saved_sft_percentage_and_resume_command(tmp_path, monkeypatch):
+    from scripts import watch_training
+    monkeypatch.setattr(watch_training, 'gpu_stats', lambda: '')
+    monkeypatch.setattr(watch_training, 'observed_seconds_per_step', lambda step: None)
+    (tmp_path/'training_metrics.json').write_text(json.dumps({
+        'phase':'sft', 'step':2600, 'status':'stopped', 'tokens_seen':1234,
+        'config':{'total_steps':172998, 'tokens_per_step':1024, 'params':120000000,
+                  'n_layer':12, 'n_embd':768, 'block_size':1024,
+                  'command':'geocentric sft --model_dir runs/geocentric-120m'},
+    }))
+    display=watch_training.render(tmp_path, [], [])
+    assert '1.5%' in display
+    assert 'step 2,600 / 172,998' in display
+    assert 'geocentric sft --model_dir runs/geocentric-120m' in display

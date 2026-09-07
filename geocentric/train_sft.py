@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import json
 import shutil
+import shlex
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +14,7 @@ from torch.utils.data import DataLoader, random_split
 from geocentric.checkpoint import (
     find_tokenizer_path,
     load_checkpoint,
+    load_optimizer_state,
     pretrained_checkpoint_name,
     save_checkpoint,
     sft_checkpoint_name,
@@ -83,8 +87,20 @@ def sft(
     out = Path(output_dir).expanduser().resolve() if output_dir else src
     out.mkdir(parents=True, exist_ok=True)
 
-    initialize_training_metrics(out, phase="sft", config={"epochs": epochs})
-    update_training_metrics(out, {"status": "preparing", "message": "Loading checkpoint on CPU."})
+    ckpt_name = sft_checkpoint_name(modelver)
+    best_name = sft_checkpoint_name(modelver, best=True)
+    resume_name = ckpt_name if not overwrite_output_dir and (out / ckpt_name).is_file() else None
+    prior_metrics = {}
+    metrics_path = out / "training_metrics.json"
+    if metrics_path.is_file():
+        try:
+            prior_metrics = json.loads(metrics_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    if not resume_name or not prior_metrics:
+        initialize_training_metrics(out, phase="sft", config={"epochs": epochs})
+    update_training_metrics(out, {"phase": "sft", "status": "preparing", "message": "Loading checkpoint on CPU."})
     device = select_device()
     dtype = resolve_dtype(device, dtype_name)
     enable_fast_math()
@@ -94,18 +110,23 @@ def sft(
         for old in out.glob("*_sft*.pt"):
             old.unlink(missing_ok=True)
 
-    tokenizer_path = find_tokenizer_path(src, extra_dirs=[out])
+    tokenizer_path = find_tokenizer_path(out if resume_name else src, extra_dirs=[src, out])
     tokenizer = load_tokenizer(tokenizer_path)
     if tokenizer_path.resolve() != (out / "tokenizer.json").resolve():
         shutil.copy2(tokenizer_path, out / "tokenizer.json")
     pad_id = token_id(tokenizer, "<pad>")
 
     preferred = pretrained_checkpoint_name(modelver, best=True)
+    load_dir = out if resume_name else src
+    load_name = resume_name or checkpoint_name or (preferred if (src / preferred).is_file() else None)
     model = load_checkpoint(
-        src, device=torch.device("cpu"), dtype=torch.float32,
-        checkpoint_name=checkpoint_name or (preferred if (src / preferred).is_file() else None),
+        load_dir, device=torch.device("cpu"), dtype=torch.float32,
+        checkpoint_name=load_name,
         mmap=True,
     )
+    if resume_name:
+        update_training_metrics(out, {"step": model._checkpoint_step,
+                                      "message": f"Loaded SFT step {model._checkpoint_step:,}; checking token cache."})
     model.loss_chunk_size = loss_chunk_size
     if drop_watermark:
         model.config.watermark = None
@@ -127,9 +148,17 @@ def sft(
         block.gradient_checkpointing = gradient_checkpointing
     block_size = model.config.block_size
 
-    update_training_metrics(out, {"message": "Tokenizing SFT data to temporary disk storage."})
+    update_training_metrics(out, {"message": "Checking the persistent SFT token cache."})
     dataset = SFTDataset(tokenizer, sft_data_path, block_size=block_size, drop_overlong=drop_overlong,
                          cache_dir=out / "sft-cache")
+    resume_state = getattr(model, "_sft_resume_state", None) if resume_name else None
+    geometry = {"cache_key": dataset.examples.path.stem, "batch_size": batch_size,
+                "gradient_accumulation_steps": gradient_accumulation_steps, "eval_ratio": eval_ratio,
+                "learning_rate": learning_rate, "warmup_ratio": warmup_ratio,
+                "min_lr_ratio": min_lr_ratio}
+    if resume_state and resume_state.get("geometry") != geometry:
+        raise ValueError("SFT resume data or training settings changed. Use the original settings "
+                         "to resume, or a new output directory for a new fine-tune.")
     eval_len = max(1, int(len(dataset) * eval_ratio)) if len(dataset) > 50 else 0
     if eval_len:
         train_ds, eval_ds = random_split(
@@ -146,8 +175,11 @@ def sft(
     update_training_metrics(out, {"message": "Moving model to training device."})
     from geocentric.epicycle import EpicycleConfig, build_epicycle_optimizer
     prior_optimizer = getattr(model, "_sft_optimizer_config", None)
-    inherited = EpicycleConfig.from_dict(prior_optimizer if prior_optimizer is not None else
-                                        (getattr(model, "_epicycle_state", None) or {}).get("config"))
+    legacy_adamw_resume = (resume_name and prior_optimizer is None
+                           and getattr(model, "_checkpoint_optimizer_type", None) == "AdamW")
+    inherited = EpicycleConfig.from_dict(
+        {} if legacy_adamw_resume else prior_optimizer if prior_optimizer is not None else
+        (getattr(model, "_epicycle_state", None) or {}).get("config"))
     optimizer_config = (inherited if optimizer_name == "auto" and inherited.enabled and inherited.armillary
                         else EpicycleConfig.preset(optimizer_name) if optimizer_name in ("capacity", "balanced") else None)
     static_bytes = sum(p.numel() for p in model.parameters()) * 16
@@ -181,12 +213,12 @@ def sft(
     )
     if num_workers > 0:
         loader_kwargs["prefetch_factor"] = 4
-    train_loader = DataLoader(train_ds, shuffle=True, drop_last=False, **loader_kwargs)
     eval_loader = DataLoader(eval_ds, shuffle=False, **loader_kwargs) if eval_ds else None
 
-    if not len(train_loader):
+    batches_per_epoch = math.ceil(len(train_ds) / batch_size)
+    if not batches_per_epoch:
         raise ValueError("No training conversations remain after filtering")
-    steps_per_epoch = math.ceil(len(train_loader) / gradient_accumulation_steps)
+    steps_per_epoch = math.ceil(batches_per_epoch / gradient_accumulation_steps)
     total_steps = steps_per_epoch * max(1, epochs)
     warmup_steps = max(5, int(total_steps * warmup_ratio))
 
@@ -204,9 +236,17 @@ def sft(
     optimizer = (build_epicycle_optimizer(model, optimizer_config, learning_rate, weight_decay)
                  if optimizer_config is not None else
                  build_optimizer(model, learning_rate, weight_decay, device_type=device.type))
+    start_step = load_optimizer_state(out, resume_name, optimizer, mmap=True) if resume_name else 0
+    if resume_name and not resume_state:
+        print("Legacy SFT checkpoint: restoring weights/optimizer/step; old shuffled batch order "
+              "was not saved, so the remaining data position is approximate.", flush=True)
+    if start_step:
+        print(f"Resuming SFT at step {start_step:,} of {total_steps:,}.", flush=True)
     active_model, compiled = maybe_compile(model, device, compile_mode)
     use_scaler = device.type == "cuda" and dtype == torch.float16
     scaler = torch.amp.GradScaler(enabled=use_scaler)
+    if resume_name and use_scaler and getattr(model, "_grad_scaler_state", None):
+        scaler.load_state_dict(model._grad_scaler_state)
     model._grad_scaler = scaler
     loss_normalizer = batch_size * block_size * gradient_accumulation_steps
     autocast = (
@@ -215,9 +255,7 @@ def sft(
         else torch.amp.autocast(device_type=device.type, enabled=False)
     )
 
-    initialize_training_metrics(
-        out, phase="sft",
-        config={
+    metrics_config = {
             "examples": len(dataset), "dropped_overlong": getattr(dataset, "dropped", 0),
             "epochs": epochs, "batch_size": batch_size,
             "gradient_accumulation_steps": gradient_accumulation_steps,
@@ -227,34 +265,74 @@ def sft(
             "optimizer_config": optimizer_config.to_dict() if optimizer_config else None,
             "watermark_identity": (model.config.watermark or {}).get("identity"),
             "loss_guard": LossGuardConfig(enabled=loss_guard).to_dict(),
+            "params": n_params, "n_layer": model.config.n_layer,
+            "n_embd": model.config.n_embd,
+            "command": shlex.join([sys.executable, "-m", "geocentric.cli", *sys.argv[1:]]),
             # Nominal, not exact: conversations vary in length, so actual supervised
             # tokens per step (tracked below as tokens_seen) drift from this budget.
             "tokens_per_step": loss_normalizer,
-        },
-    )
+        }
+    saved_tokens = (resume_state.get("tokens_seen", 0) if resume_state else
+                    prior_metrics.get("tokens_seen", 0)) if resume_name else 0
+    if resume_name:
+        update_training_metrics(out, {"status": "running", "step": start_step,
+                                      "tokens_seen": int(saved_tokens or 0),
+                                      "config": metrics_config,
+                                      "message": f"Resuming SFT at step {start_step:,}."})
+    else:
+        initialize_training_metrics(out, phase="sft", config=metrics_config)
 
-    ckpt_name = sft_checkpoint_name(modelver)
-    best_name = sft_checkpoint_name(modelver, best=True)
     # Fine-tuning is short and its loss is noisier per step than pretraining's, so the
     # guard earns its place here mostly by dropping the occasional poisoned batch
     # rather than by rolling back.
-    guard = LossGuard(LossGuardConfig(enabled=loss_guard, warmup_steps=30))
+    guard = LossGuard(LossGuardConfig(enabled=loss_guard, warmup_steps=30), start_step=start_step)
+    if resume_state and resume_state.get("guard") and loss_guard:
+        guard.__dict__.update(resume_state["guard"])
     snapshot = WeightSnapshot(every=snapshot_every, enabled=loss_guard and snapshot_every > 0)
     meter = Throughput(n_params, block_size, device, dtype)
-    step = 0
-    tokens_seen = 0
-    best_eval = float("inf")
+    step = start_step
+    tokens_seen = int(saved_tokens or 0)
+    model._training_tokens = tokens_seen
+    best_eval = float((resume_state or {}).get("best_eval", prior_metrics.get("best_eval_loss") or "inf"))
     running_loss = 0.0
     micro_count = 0
     window_tokens = 0
     avg_loss = None
     optimizer.zero_grad(set_to_none=True)
 
+    def remember_position(epoch, next_batch):
+        model._sft_resume_state = {
+            "epoch": epoch, "next_batch": next_batch, "geometry": geometry,
+            "tokens_seen": tokens_seen, "best_eval": best_eval,
+            "device_type": device.type,
+            "guard": {k: v for k, v in vars(guard).items() if k != "config"},
+            "cpu_rng": torch.get_rng_state(),
+            "device_rng": (torch.cuda.get_rng_state(device) if device.type == "cuda" else
+                           torch.mps.get_rng_state() if device.type == "mps" else None),
+        }
+
+    if resume_state:
+        torch.set_rng_state(resume_state["cpu_rng"])
+        if resume_state.get("device_rng") is not None and resume_state.get("device_type") == device.type:
+            if device.type == "cuda":
+                torch.cuda.set_rng_state(resume_state["device_rng"], device)
+            elif device.type == "mps":
+                torch.mps.set_rng_state(resume_state["device_rng"])
+    first_epoch = resume_state["epoch"] if resume_state else step // steps_per_epoch + 1
+    first_batch = resume_state["next_batch"] if resume_state else (step % steps_per_epoch) * gradient_accumulation_steps
+    remember_position(first_epoch, first_batch)
+
     try:
-        pbar = tqdm(total=total_steps, desc="sft", dynamic_ncols=True)
-        for epoch in range(1, max(1, epochs) + 1):
+        pbar = tqdm(total=total_steps, initial=min(step, total_steps), desc="sft", dynamic_ncols=True)
+        for epoch in range(first_epoch, max(1, epochs) + 1):
+            generator = torch.Generator().manual_seed(42 + epoch)
+            train_loader = DataLoader(train_ds, shuffle=True, drop_last=False,
+                                      generator=generator, **loader_kwargs)
+            skip_batches = first_batch if epoch == first_epoch else 0
             model.train()
             for batch_index, batch in enumerate(train_loader):
+                if batch_index < skip_batches:
+                    continue
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
                 labels = batch["labels"].to(device, non_blocking=True)
 
@@ -306,7 +384,6 @@ def sft(
                           f"{verdict.reason}")
                     if restored is not None:
                         print(f"    restored the weights from step {restored:,}.")
-                        step = restored
                         optimizer.state.clear()
                     continue
 
@@ -334,11 +411,13 @@ def sft(
                 optimizer.zero_grad(set_to_none=True)
                 step += 1
                 tokens_seen += window_tokens
+                model._training_tokens = tokens_seen
                 running_loss = 0.0
                 micro_count = 0
                 window_tokens = 0
                 pbar.update(1)
                 snapshot.maybe_take(model, step, healthy=verdict.action == OK)
+                remember_position(epoch, batch_index + 1)
 
                 if step % log_every == 0:
                     tps, mfu = meter.read()
@@ -369,6 +448,7 @@ def sft(
                     record_checkpoint(out, best_name, step, avg_loss, eval_loss)
                     print("  new best SFT checkpoint saved.")
                 meter.reset()
+            remember_position(epoch + 1, 0)
             save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer,
                             extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft", "loss": avg_loss})
             record_checkpoint(out, ckpt_name, step, avg_loss)
@@ -381,14 +461,16 @@ def sft(
     except KeyboardInterrupt:
         print("\n[Ctrl+C] Saving SFT checkpoint before exit...")
         save_checkpoint(model, out, step, name=ckpt_name, optimizer=optimizer, extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft"})
-        update_training_metrics(out, {"status": "stopped", "message": "Interrupted by user."})
+        update_training_metrics(out, {"status": "stopped", "step": step, "tokens_seen": tokens_seen,
+                                      "message": "Interrupted by user."})
         return
     finally:
         cleanup(device)
 
     if not (out / best_name).exists():
         save_checkpoint(model, out, step, name=best_name, optimizer=optimizer, extra={"sft_optimizer_config": optimizer_config.to_dict() if optimizer_config else {}, "stage": "sft"})
-    update_training_metrics(out, {"status": "complete", "step": step, "message": "SFT complete.",
+    update_training_metrics(out, {"status": "complete", "step": step, "tokens_seen": tokens_seen,
+                                  "message": "SFT complete.",
                                   "loss_guard": guard.summary()})
     print(f"SFT complete after {step:,} steps. Saved to {out}")
 
