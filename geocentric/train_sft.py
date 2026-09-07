@@ -120,7 +120,7 @@ def sft(
               f"({model.config.watermark.get('identity')!r}). Pass --no_watermark to drop it.")
     if device.type == "cuda":
         # Leave headroom for the display/compositor; no allocation-failure probing.
-        torch.cuda.set_per_process_memory_fraction(0.75, device)
+        torch.cuda.set_per_process_memory_fraction(0.75, torch.cuda.current_device())
         gradient_checkpointing = True
     model.config.gradient_checkpointing = gradient_checkpointing
     for block in model.blocks:
