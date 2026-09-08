@@ -62,8 +62,31 @@ PRETRAIN_SOURCES = {
         "repo": "bigcode/the-stack-smol-xl", "config": None,
         "split": "train", "field": "content", "share": 0.25,
         # data_dir is set per language below; the loader iterates them in turn.
-        "languages": ["python", "c", "c++", "javascript", "shell", "rust", "go",
-                      "sql", "assembly"],
+        # smol-xl holds roughly 100 MB per language, so nine of them yielded
+        # 935 MB against a 4.9 GB slice -- code would have been 4.8% of the
+        # corpus instead of 25%. Breadth is how an ungated source reaches the
+        # target. Proof assistants and dead esoterica stay excluded; what is here
+        # is what a systems, security and application model actually meets.
+        "languages": [
+            # systems and low level
+            "c", "c++", "c-sharp", "rust", "go", "assembly", "zig", "cuda",
+            "fortran", "ada", "pascal", "glsl",
+            # ops, shells and build
+            "python", "shell", "perl", "lua", "powershell", "batchfile", "tcl",
+            "awk", "makefile", "cmake", "dockerfile",
+            # application and web
+            "javascript", "typescript", "java", "php", "ruby", "kotlin",
+            "scala", "dart", "groovy", "css", "html",
+            # data, query and interchange
+            "sql", "r", "matlab", "julia", "protocol-buffer", "thrift",
+            # functional
+            "haskell", "ocaml", "erlang", "elixir", "clojure", "common-lisp",
+            "f-sharp", "scheme",
+            # hardware description
+            "verilog", "vhdl", "systemverilog",
+            # documentation and contracts
+            "markdown", "restructuredtext", "tex", "solidity", "visual-basic",
+        ],
     },
     "science": {
         # allenai/peS2o is a script-based dataset and no longer loads at all.
