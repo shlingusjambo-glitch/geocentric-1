@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("--no_resume", action="store_true")
     pre.add_argument("--reprepare", action="store_true", help="Re-tokenize the corpus even if shards exist")
     pre.add_argument("--epicycle", default="off",
-                     choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective", "knowledge"],
+                     choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "maximal", "selective", "knowledge"],
                      help="EPICYCLE training gears. speed = elastic depth + context; "
                           "quality = adds token selection; memory = adds rotating optimizer "
                           "state so more parameters fit; full = everything.")
@@ -168,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--max_steps", type=int, default=0)
     pl.add_argument("--doc_sep", default=None)
     pl.add_argument("--epicycle", default="off",
-                    choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "selective", "knowledge"])
+                    choices=["off", "speed", "quality", "memory", "full", "capacity", "balanced", "maximal", "selective", "knowledge"])
     _add_common_training_flags(pl)
     _add_loss_guard_flags(pl)
     pl.add_argument("--mneme", action="store_true", help="Add MNEME to pretraining, including EQUANT presets")

@@ -89,10 +89,16 @@ class EpicycleConfig:
             return cls(enabled=True, deferent=True, horizon=True, equant=True, armillary=True)
         if name == "capacity":
             return cls(enabled=True, equant=False, armillary=True, armillary_factored=True)
+        if name == "maximal":
+            # Every gear at once, on the compact optimizer. `full` also runs all
+            # four, but keeps plain rings: on a 250M model that is 0.47 GB more
+            # state, which is the difference between fitting a 6 GB card and not.
+            return cls(enabled=True, deferent=True, horizon=True, equant=True,
+                       armillary=True, armillary_factored=True, armillary_partitioned=True)
         if name == "balanced":
             return cls(enabled=True, equant=False, armillary=True, armillary_factored=True,
                        armillary_partitioned=True)
-        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity, balanced, selective, knowledge.")
+        raise ValueError(f"Unknown epicycle preset {name!r}. Choose off, speed, quality, memory, full, capacity, balanced, maximal, selective, knowledge.")
 
 
 class EpicycleScheduler:

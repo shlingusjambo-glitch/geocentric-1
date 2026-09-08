@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 BLOCKS = "▁▂▃▄▅▆▇█"
+MONITOR_PORT = int(os.environ.get("GEOCENTRIC_MONITOR_PORT", 8787))
 
 
 TRAINER_COMMANDS = {"pretrain", "sft", "pipeline"}
@@ -156,6 +157,46 @@ class KeyReader:
             return None
         ready, _, _ = select.select([sys.stdin], [], [], timeout)
         return sys.stdin.read(1) if ready else None
+
+
+def lan_ip() -> str:
+    """This box's LAN address. A UDP connect() only selects a route; nothing is sent."""
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        return probe.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        probe.close()
+
+
+def monitor_running(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.4)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+def ensure_monitor(run_dir: Path, port: int) -> None:
+    """Start the LAN web monitor if nothing is already serving that port.
+
+    Detached and niced inside watch_web.py, so it outlives this viewer and never
+    competes with the trainer for a core.
+    """
+    if monitor_running(port):
+        return
+    script = Path(__file__).resolve().parent / "watch_web.py"
+    if not script.exists():
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script), str(run_dir), "--port", str(port), "--wait", "86400"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            start_new_session=True)
+    except OSError:
+        pass
 
 
 def sparkline(values: list[float], width: int = 48) -> str:
@@ -346,6 +387,7 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
 
     lines.append("")
     lines.append(f"  GPU  {gpu_stats()}")
+    lines.append(f"  Web  http://{lan_ip()}:{MONITOR_PORT}   (LAN — same numbers, from a phone)")
     ckpts = sorted(run_dir.glob("*.pt"))
     if ckpts:
         newest = max(ckpts, key=lambda p: p.stat().st_mtime)
@@ -388,9 +430,13 @@ def main() -> None:
     ap.add_argument("run_dir", nargs="?", default="runs/geocentric-120m")
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--once", action="store_true")
+    ap.add_argument("--no_web", action="store_true",
+                    help="Do not start the LAN web monitor alongside this view.")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
+    if not args.no_web:
+        ensure_monitor(run_dir, MONITOR_PORT)
     history: list[float] = []
     eval_history: list[float] = []
 
