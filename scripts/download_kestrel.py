@@ -62,10 +62,13 @@ PRETRAIN_SOURCES = {
         "repo": "bigcode/the-stack-smol-xl", "config": None,
         "split": "train", "field": "content", "share": 0.25,
         # data_dir is set per language below; the loader iterates them in turn.
-        "languages": ["python", "c", "cpp", "javascript", "shell", "rust", "go", "sql"],
+        "languages": ["python", "c", "c++", "javascript", "shell", "rust", "go",
+                      "sql", "assembly"],
     },
     "science": {
-        "repo": "allenai/peS2o", "config": "v2",
+        # allenai/peS2o is a script-based dataset and no longer loads at all.
+        # common-pile serves the same corpus as parquet, and as full paper text.
+        "repo": "common-pile/peS2o_filtered", "config": None,
         "split": "train", "field": "text", "share": 0.08,
     },
     "wikipedia": {
@@ -102,8 +105,13 @@ SFT_SOURCES = {
         "share": 0.15, "format": "query_response",
     },
     "reasoning": {
-        "repo": "open-thoughts/OpenThoughts-114k", "config": "metadata", "split": "train",
-        "share": 0.10, "format": "problem_solution",
+        # Default config is ShareGPT-shaped (system + conversations), not the
+        # problem/solution pair the "metadata" config suggests. Its own system
+        # prompt asks for long <|begin_of_thought|> traces; those blow past
+        # sft_max_chars and get dropped, which is the intent at this scale --
+        # what survives is the short-form reasoning a 250M model can hold.
+        "repo": "open-thoughts/OpenThoughts-114k", "config": None, "split": "train",
+        "share": 0.10, "format": "conversations",
     },
 }
 
@@ -160,7 +168,16 @@ def stream_to_text(name: str, spec: dict, target_bytes: int, out_path: Path, res
             if language:
                 kwargs["data_dir"] = f"data/{language}"
             budget = written + per_language if language else target_bytes
-            for row in load_dataset(spec["repo"], **kwargs):
+            try:
+                stream = load_dataset(spec["repo"], **kwargs)
+            except Exception as exc:
+                # A renamed language directory or a dataset that changed loaders
+                # must cost its own slice, not the whole run. This is a nine-day
+                # pipeline; it does not get to die on one bad repo path.
+                print(f"[{name}] {language or spec['repo']} unavailable, skipping: "
+                      f"{type(exc).__name__}: {str(exc)[:160]}", flush=True)
+                continue
+            for row in stream:
                 text = (row.get(spec["field"]) or "").strip()
                 if len(text) < 200:
                     continue
@@ -262,14 +279,23 @@ def _rfcs(sink, budget: int) -> int:
     """RFCs: how the wires actually work, from the RFC Editor. Public domain."""
     import urllib.request
     written = 0
+    misses = 0
     for number in range(1, 9600):
         if written >= budget:
             break
+        # Gaps in the numbering are normal (never-published numbers), so a single
+        # miss means nothing -- but a long unbroken run of them means the server
+        # is refusing us, and 9,600 timeouts at 15s each is 40 hours of nothing.
+        if misses >= 150:
+            print(f"[systems] rfc: {misses} consecutive failures, stopping early", flush=True)
+            break
         try:
             with urllib.request.urlopen(
-                    f"https://www.rfc-editor.org/rfc/rfc{number}.txt", timeout=20) as response:
+                    f"https://www.rfc-editor.org/rfc/rfc{number}.txt", timeout=15) as response:
                 body = response.read().decode("utf-8", "replace").strip()
+            misses = 0
         except Exception:
+            misses += 1
             continue
         if len(body) < 2000:
             continue
@@ -564,10 +590,16 @@ def main() -> None:
             pass
         target = int(total_bytes * spec["share"])
         path = out / "pretrain" / f"{name}.txt"
-        if name == "systems":
-            fetch_systems(target, path, resume)
-        else:
-            stream_to_text(name, spec, target, path, resume)
+        try:
+            if name == "systems":
+                fetch_systems(target, path, resume)
+            else:
+                stream_to_text(name, spec, target, path, resume)
+        except Exception as exc:
+            # Report and carry on. A short corpus is recoverable by rerunning
+            # this script; a pipeline that died overnight at source four is not.
+            print(f"[{name}] FAILED, continuing without it: "
+                  f"{type(exc).__name__}: {str(exc)[:200]}", flush=True)
 
     if args.only in (None, "sft"):
         download_sft(out / "sft" / "kestrel_sft.jsonl", args.sft_rows, resume,
