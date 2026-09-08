@@ -329,6 +329,7 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
     lines.append(f"  GEOCENTRIC  ·  {run_dir}")
     lines.append("═" * width)
 
+    banner = stage_banner(run_dir, width)
     if not metrics_path.exists():
         train_bin = run_dir / "corpus" / "train.bin"
         lines.append("")
@@ -349,8 +350,11 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
             lines.append("")
             lines.append("  Training begins automatically when this finishes.")
         else:
-            lines.append("  Waiting for the run to start...")
-        lines.extend(stage_banner(run_dir, width))
+            # Only claim we are waiting when the stage banner has nothing to
+            # say; during a download it knows exactly what is happening.
+            if not banner:
+                lines.append("  Waiting for the run to start...")
+        lines.extend(banner)
         lines.append("")
         lines.append(f"  GPU: {gpu_stats()}")
         lines.append(f"  Web  http://{lan_ip()}:{MONITOR_PORT}   (LAN — same view, from a phone)")
@@ -385,7 +389,7 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
         per_step = tok_per_step / tps
     remaining = (total - step) * per_step if per_step else 0
 
-    lines.extend(stage_banner(run_dir, width))
+    lines.extend(banner)
     lines.append("")
     lines.append(f"  Stage    {phase}  ·  {status}")
     lines.append(f"  Model    {cfg.get('params', 0):,} params · {cfg.get('n_layer','?')}L × {cfg.get('n_embd','?')}d "

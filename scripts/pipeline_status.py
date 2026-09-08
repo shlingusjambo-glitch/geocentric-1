@@ -25,6 +25,9 @@ STAGES = [
 TERMINAL = {"complete", "stopped", "failed", "diverged"}
 
 
+_TARGETS_CACHE: dict | None = None
+
+
 def _load_recipe_targets(default_tokens: float = 5e9, bytes_per_token: float = 4.2):
     """Per-source byte targets, read from the download recipe itself.
 
@@ -32,6 +35,9 @@ def _load_recipe_targets(default_tokens: float = 5e9, bytes_per_token: float = 4
     truth; it declares only constants at module level and pulls `datasets`
     inside its functions, so this stays stdlib-only.
     """
+    global _TARGETS_CACHE
+    if _TARGETS_CACHE is not None:
+        return _TARGETS_CACHE
     recipe = Path(__file__).resolve().parent / "download_kestrel.py"
     if not recipe.exists():
         return {}
@@ -41,8 +47,9 @@ def _load_recipe_targets(default_tokens: float = 5e9, bytes_per_token: float = 4
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         total = default_tokens * bytes_per_token
-        return {name: int(total * spec_["share"])
-                for name, spec_ in module.PRETRAIN_SOURCES.items()}
+        _TARGETS_CACHE = {name: int(total * spec_["share"])
+                          for name, spec_ in module.PRETRAIN_SOURCES.items()}
+        return _TARGETS_CACHE
     except Exception:
         return {}
 
