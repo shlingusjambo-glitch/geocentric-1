@@ -20,6 +20,18 @@ set -euo pipefail
 # download looks stalled when it is not.
 export PYTHONUNBUFFERED=1
 
+# One pipeline at a time. Two concurrent runs open the same corpus files with
+# "w" and truncate each other's work -- which is not a hypothetical: it silently
+# reset a systems corpus from 74 MB back to 500 KB mid-build. flock makes a
+# second launch exit immediately instead of quietly corrupting the first.
+LOCK="${LOCK:-/tmp/kestrel-pipeline.lock}"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "Another Kestrel pipeline holds $LOCK (pid $(cat "$LOCK" 2>/dev/null)). Exiting."
+  exit 1
+fi
+echo $$ >&9
+
 PY="${PY:-.venv/bin/python}"
 RUN_DIR="${RUN_DIR:-runs/kestrel-250m}"
 DATA_DIR="${DATA_DIR:-data/kestrel}"
