@@ -41,9 +41,20 @@ MNEME="${MNEME:-}"
 # cannot take VRAM or a core from the trainer.
 MONITOR_PORT="${MONITOR_PORT:-8787}"
 
+# Publish the current stage so the watchers can show the hours before training
+# starts -- a download and a corpus tokenization otherwise render as "waiting",
+# which looks exactly like a run that died.
+mkdir -p "$RUN_DIR"
+stage() {
+  printf '{"stage": %s, "of": 5, "name": "%s", "started": "%s"}\n' \
+    "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN_DIR/pipeline.json"
+}
+
+stage 1 download
 echo "=== 1/5  download (~20 GB text, ~9 GB shards) ==="
 $PY scripts/download_kestrel.py --out_dir "$DATA_DIR" --target_tokens "$TOKENS"
 
+stage 2 tokenizer
 echo "=== 2/5  tokenizer (${VOCAB} vocab) ==="
 # Trained on THIS mix, not the 120M's. A tokenizer fitted to prose spends three
 # or four tokens on an identifier like `getaddrinfo` and splits indentation into
@@ -60,6 +71,7 @@ else
   echo "tokenizer exists, skipping"
 fi
 
+stage 3 "tokenize corpus"
 echo "=== 3/5  tokenize corpus to binary shards ==="
 $PY -m geocentric.cli prepare \
     --data_path "$DATA_DIR/pretrain" \
@@ -71,12 +83,13 @@ $PY -m geocentric.cli prepare \
 # Started here rather than at stage 1: it reports on training_metrics.json,
 # which does not exist until the trainer writes it. --wait keeps it patient
 # while the first stage warms up; it shuts itself down when training ends.
-$PY scripts/watch_web.py "$RUN_DIR" --port "$MONITOR_PORT" --wait 86400 --linger 900 &
+$PY scripts/watch_web.py "$RUN_DIR" --data_dir "$DATA_DIR" --port "$MONITOR_PORT" --wait 86400 --linger 900 &
 MONITOR_PID=$!
 # Whatever ends this script -- finish, Ctrl+C, failure -- takes the page with it.
 trap 'kill $MONITOR_PID 2>/dev/null || true' EXIT INT TERM
 sleep 1
 
+stage 4 pretrain
 echo "=== 4/5  pretrain (~9 days at 6,000 tok/s) ==="
 $PY -m geocentric.cli pretrain \
     --data_path "$DATA_DIR/pretrain" \
@@ -89,6 +102,7 @@ $PY -m geocentric.cli pretrain \
     --eval_every 250 --save_every 500 \
     --modelver "$MODELVER"
 
+stage 5 "instruction tuning"
 echo "=== 5/5  instruction tuning (code / math / reasoning / chat) ==="
 # No refusal data: the download step filters canned refusals out of the public
 # sets. This produces the unguarded build. The guarded build starts from this

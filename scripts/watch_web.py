@@ -31,6 +31,13 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from pipeline_status import describe as pipeline_describe
+except Exception:
+    pipeline_describe = None
+
 TERMINAL = {"complete", "stopped", "failed", "diverged"}
 # Shared with watch_training.py: the trainer writes its pid here.
 PID_FILE = "trainer.pid"
@@ -105,11 +112,31 @@ def trainer_alive(run_dir: Path) -> bool:
     return False
 
 
+def last_activity(run_dir: Path, data_dir: Path) -> float:
+    """Seconds since anything the pipeline writes last changed.
+
+    The pre-training stages have no metrics file to go stale, so freshness on
+    disk is the only evidence that a download or a tokenization is still moving.
+    """
+    newest = 0.0
+    for pattern in ((data_dir / "pretrain").glob("*.txt"),
+                    (data_dir / "sft").glob("*.jsonl"),
+                    (run_dir / "corpus").glob("*.bin"),
+                    [run_dir / "pipeline.json", run_dir / "tokenizer.json"]):
+        for path in pattern:
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                pass
+    return (time.time() - newest) if newest else float("inf")
+
+
 class Monitor:
     """Caches the metrics file so browser refreshes cannot amplify disk reads."""
 
-    def __init__(self, run_dir: Path, poll: float):
+    def __init__(self, run_dir: Path, poll: float, data_dir: Path | None = None):
         self.run_dir = run_dir
+        self.data_dir = Path(data_dir) if data_dir else Path("data/kestrel")
         self.poll = poll
         self.path = run_dir / "training_metrics.json"
         self._lock = threading.Lock()
@@ -153,12 +180,41 @@ class Monitor:
         if rate and tokens_per_step and total > step:
             seconds_left = (total - step) * tokens_per_step / rate
 
+        stage = {}
+        if pipeline_describe is not None:
+            try:
+                stage = pipeline_describe(self.run_dir, self.data_dir)
+            except Exception:
+                stage = {}
+
+        # Before training starts there are no metrics, but the pipeline is very
+        # much alive -- a download or a corpus tokenization. Treat a live
+        # pre-training stage as running so the page does not read as dead.
+        # A pre-training stage counts as live only while it is demonstrably
+        # moving. Without that check a pipeline that died mid-download would
+        # hold the page open forever, reporting a stage that stopped hours ago.
+        idle = last_activity(self.run_dir, self.data_dir)
+        pre_training = bool(stage) and stage.get("stage", 0) in (1, 2, 3) and idle < 1800
+        pre_training_dead = (bool(stage) and stage.get("stage", 0) in (1, 2, 3)
+                             and idle >= 1800)
+        if pre_training:
+            alive = True
+            status = stage.get("stage_name", status)
+        elif pre_training_dead:
+            status = f"{stage.get('stage_name', 'pipeline')} stalled"
+
         return {
             "run": self.run_dir.name,
+            "stage": stage,
+            "pre_training": pre_training,
             "phase": m.get("phase", "?"),
             "status": status,
             "alive": alive,
-            "finished": status in TERMINAL and not alive,
+            # A stalled pre-training stage is an ending too: nothing has been
+            # written in half an hour and no trainer is running.
+            "finished": ((status in TERMINAL and not alive and not pre_training)
+                         or pre_training_dead),
+            "idle_seconds": idle,
             "message": m.get("message", ""),
             "step": step,
             "total": total,
@@ -234,11 +290,34 @@ h1{font-size:17px;margin:0 0 2px;font-weight:600}
 svg{width:100%;height:90px;display:block}
 footer{color:var(--dim);font-size:12px;text-align:center;margin-top:18px}
 .msg{color:var(--dim);font-size:13px;margin-top:8px;word-break:break-word}
+.stages{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.st{flex:1 1 88px;padding:6px 8px;border-radius:7px;border:1px solid var(--line);background:#0b0d10;font-size:11px;color:var(--dim)}
+.st b{display:block;font-size:12px;color:var(--fg);font-weight:600;margin-top:1px}
+.st.done{border-color:#1a4d2a;color:var(--ok)}.st.done b{color:var(--ok)}
+.st.live{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}.st.live b{color:var(--accent)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+td{padding:3px 0;color:var(--dim)}
+td.n{color:var(--fg)}td.r{text-align:right;font-variant-numeric:tabular-nums}
+.mini{display:inline-block;width:70px;height:6px;background:#0b0d10;border:1px solid var(--line);border-radius:3px;overflow:hidden;vertical-align:middle}
+.mini i{display:block;height:100%;background:var(--accent)}
 </style></head><body><div class="wrap">
 <h1><span id="dot" class="dot idle"></span><span id="title">__RUN__</span></h1>
 <div class="sub" id="sub">connecting…</div>
 
 <div class="card">
+  <div class="k">pipeline</div>
+  <div class="stages" id="stages"></div>
+  <div class="sub" id="stagedetail" style="margin:8px 0 0"></div>
+</div>
+
+<div class="card" id="dlcard" hidden>
+  <div class="k">corpus download</div>
+  <div class="bar"><div class="fill" id="dlfill" style="width:0%"></div></div>
+  <div class="sub" id="dltotal" style="margin:0 0 8px"></div>
+  <table id="dltable"></table>
+</div>
+
+<div class="card" id="trcard">
   <div class="k">progress</div>
   <div class="bar"><div class="fill" id="fill" style="width:0%"></div></div>
   <div id="prog" class="sub" style="margin:0"></div>
@@ -279,10 +358,32 @@ async function tick(){
   let d;
   try{ d=await (await fetch("/api/status",{cache:"no-store"})).json(); }
   catch(e){ $("sub").textContent="monitor unreachable — training may have ended"; $("dot").className="dot err"; return; }
-  $("title").textContent=d.run+" · "+d.phase;
+  const st=d.stage||{};
+  if(st.stage_list){
+    $("stages").innerHTML=st.stage_list.map(x=>
+      `<div class="st ${x.state}">${x.n}<b>${x.name}</b></div>`).join("");
+    $("stagedetail").textContent=`stage ${st.stage}/${st.stages} — ${st.stage_name}`
+      +(st.stage_detail?"   ·   "+st.stage_detail:"");
+  }
+  const dl=st.download;
+  if(dl && st.stage===1){
+    $("dlcard").hidden=false; $("trcard").hidden=true;
+    $("dlfill").style.width=(dl.fraction*100).toFixed(1)+"%";
+    $("dltotal").textContent=`${(dl.bytes/1e9).toFixed(1)} of ${(dl.target/1e9).toFixed(1)} GB `
+      +`(${(dl.fraction*100).toFixed(1)}%)`+(dl.sft_bytes?`  ·  sft ${(dl.sft_bytes/1e6).toFixed(0)} MB`:"");
+    $("dltable").innerHTML=dl.sources.map(x=>{
+      const g=x.state==="done"?"✔":(x.state==="running"?"▸":"·");
+      return `<tr><td class="n">${g} ${x.name}</td>`
+        +`<td class="r">${(x.bytes/1e9).toFixed(2)} / ${(x.target/1e9).toFixed(2)} GB</td>`
+        +`<td class="r"><span class="mini"><i style="width:${(x.fraction*100).toFixed(0)}%"></i></span></td></tr>`;
+    }).join("");
+  } else { $("dlcard").hidden=true; $("trcard").hidden=false; }
+  $("title").textContent=d.run+" · "+(st.stage_name||d.phase);
   $("dot").className="dot "+(d.alive?"live":(d.finished?"idle":"err"));
   const stale=d.stale_seconds>=0?Math.round(d.stale_seconds)+"s ago":"—";
-  $("sub").textContent=`${d.status}${d.alive?"":" (process not running)"} · ${fmt(d.params)} params · ${d.dtype} · updated ${stale}`;
+  $("sub").textContent = d.pre_training
+    ? `${st.stage_name||"working"} · ${st.stage_detail||""}`
+    : `${d.status}${d.alive?"":" (process not running)"} · ${fmt(d.params)} params · ${d.dtype} · updated ${stale}`;
   $("fill").style.width=(d.fraction*100).toFixed(2)+"%";
   $("prog").textContent=`step ${fmt(d.step)} / ${fmt(d.total)}  (${(d.fraction*100).toFixed(1)}%)`
     +(d.epochs?`   epoch ${d.epoch}/${d.epochs}`:"");
@@ -339,6 +440,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--host", default="0.0.0.0", help="0.0.0.0 serves the LAN; 127.0.0.1 this box only")
     ap.add_argument("--poll", type=float, default=5.0, help="Seconds between metrics reads")
+    ap.add_argument("--data_dir", default="data/kestrel",
+                    help="Corpus directory, for download-stage progress")
     ap.add_argument("--linger", type=float, default=300.0,
                     help="Seconds to keep serving after training ends, so a final "
                          "look is still possible. 0 exits immediately.")
@@ -354,7 +457,7 @@ def main() -> None:
         pass
 
     run_dir = Path(args.run_dir)
-    monitor = Monitor(run_dir, args.poll)
+    monitor = Monitor(run_dir, args.poll, args.data_dir)
     Handler.monitor = monitor
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)

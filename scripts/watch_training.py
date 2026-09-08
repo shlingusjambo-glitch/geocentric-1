@@ -20,6 +20,12 @@ import tty
 from datetime import datetime, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from pipeline_status import describe as pipeline_describe
+except Exception:  # a checkout without it still runs, just without stages
+    pipeline_describe = None
+
 BLOCKS = "▁▂▃▄▅▆▇█"
 MONITOR_PORT = int(os.environ.get("GEOCENTRIC_MONITOR_PORT", 8787))
 
@@ -199,6 +205,49 @@ def ensure_monitor(run_dir: Path, port: int) -> None:
         pass
 
 
+def stage_banner(run_dir: Path, width: int) -> list[str]:
+    """What the pipeline is doing, including the hours before training starts.
+
+    Without this the whole download/tokenizer/prepare stretch rendered as
+    "waiting for the run to start", which is indistinguishable from a run that
+    died an hour ago.
+    """
+    if pipeline_describe is None:
+        return []
+    data_dir = os.environ.get("KESTREL_DATA_DIR", "data/kestrel")
+    try:
+        info = pipeline_describe(run_dir, data_dir)
+    except Exception:
+        return []
+    if not info["stage"]:
+        return []
+
+    marks = []
+    for entry in info["stage_list"]:
+        glyph = "●" if entry["state"] == "done" else ("◐" if entry["state"] == "live" else "○")
+        marks.append(f"{glyph} {entry['n']} {entry['name']}")
+    lines = ["", "  " + "   ".join(marks)]
+    lines.append(f"  stage {info['stage']}/{info['stages']} — {info['stage_name']}"
+                 f"   {info['stage_detail']}")
+    if info["stage"] == 1:
+        lines.append(f"  {bar(info['download']['fraction'], min(40, width - 30))}"
+                     f"  {info['download']['fraction'] * 100:5.1f}% of the corpus")
+        for source in info["download"]["sources"]:
+            glyph = {"done": "✔", "running": "▸", "pending": "·"}[source["state"]]
+            lines.append(f"    {glyph} {source['name']:<11}"
+                         f"{source['bytes'] / 1e9:6.2f} / {source['target'] / 1e9:5.2f} GB"
+                         f"  {source['fraction'] * 100:5.1f}%")
+        if info["download"]["sft_bytes"]:
+            lines.append(f"    ▸ sft         {info['download']['sft_bytes'] / 1e6:.0f} MB")
+    elif info["stage"] == 2:
+        lines.append(f"    tokenizer.json  {info['tokenizer_bytes'] / 1e6:.2f} MB")
+    elif info["stage"] == 3:
+        corpus = info["corpus"]
+        lines.append(f"    shards {corpus['shards']}   {corpus['bytes'] / 1e9:.2f} GB"
+                     f"   ≈{corpus['tokens'] / 1e9:.2f}B tokens")
+    return lines
+
+
 def sparkline(values: list[float], width: int = 48) -> str:
     if len(values) < 2:
         return ""
@@ -301,8 +350,10 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
             lines.append("  Training begins automatically when this finishes.")
         else:
             lines.append("  Waiting for the run to start...")
+        lines.extend(stage_banner(run_dir, width))
         lines.append("")
         lines.append(f"  GPU: {gpu_stats()}")
+        lines.append(f"  Web  http://{lan_ip()}:{MONITOR_PORT}   (LAN — same view, from a phone)")
         lines.append("═" * width)
         return "\n".join(lines)
 
@@ -334,6 +385,7 @@ def render(run_dir: Path, history: list[float], eval_history: list[float],
         per_step = tok_per_step / tps
     remaining = (total - step) * per_step if per_step else 0
 
+    lines.extend(stage_banner(run_dir, width))
     lines.append("")
     lines.append(f"  Stage    {phase}  ·  {status}")
     lines.append(f"  Model    {cfg.get('params', 0):,} params · {cfg.get('n_layer','?')}L × {cfg.get('n_embd','?')}d "

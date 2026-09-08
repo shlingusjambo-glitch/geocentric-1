@@ -43,6 +43,7 @@ import sys
 from pathlib import Path
 
 DOC_SEP = "\n\n\n"
+MB = 1024 * 1024
 
 # Shares sum to 1.0 across the pretraining token budget.
 PRETRAIN_SOURCES = {
@@ -298,6 +299,51 @@ def _kernel_docs(sink, budget: int) -> int:
     return written
 
 
+def _kernel_source(sink, budget: int) -> int:
+    """The kernel's own C: the operating system, as actually implemented.
+
+    Documentation/ explains the design; this is the thing being described --
+    schedulers, allocators, filesystems, network stacks, drivers, and the dense
+    comment blocks kernel developers write above the hard parts. For a model
+    meant to understand operating systems at depth, no web corpus is a
+    substitute for the source. GPLv2, same tarball as the docs.
+    """
+    import lzma
+    import tarfile
+    import urllib.request
+
+    url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz"
+    print("[systems] fetching kernel source (.c/.h) from the same tarball")
+    written = 0
+    try:
+        with urllib.request.urlopen(url, timeout=300) as response:
+            xz = lzma.LZMAFile(response)
+            with tarfile.open(fileobj=xz, mode="r|") as tar:
+                for member in tar:
+                    if written >= budget:
+                        break
+                    if not member.isfile() or not member.name.endswith((".c", ".h")):
+                        continue
+                    # Generated headers and the test tree teach little about the
+                    # kernel and a lot about build plumbing.
+                    if "/tools/testing/" in member.name or "/scripts/" in member.name:
+                        continue
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        continue
+                    body = extracted.read().decode("utf-8", "replace").strip()
+                    if len(body) < 600:
+                        continue
+                    path = member.name.split("/", 1)[-1]
+                    record = f"// {path}\n\n{body}"
+                    sink.write(record + DOC_SEP)
+                    written += len(record.encode("utf-8")) + len(DOC_SEP)
+    except Exception as exc:
+        print(f"[systems] kernel source unavailable ({exc})")
+    print(f"[systems] kernel source: {human(written)}")
+    return written
+
+
 def _rfcs(sink, budget: int) -> int:
     """RFCs: how the wires actually work, from the RFC Editor. Public domain."""
     import urllib.request
@@ -456,23 +502,28 @@ def fetch_systems(target_bytes: int, out_path: Path, resume: bool) -> int:
         return out_path.stat().st_size
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Shares within the systems slice. Kernel docs and man pages are the OS core;
-    # RFCs the networking core; CWE/ATT&CK/CVE the security core.
+    # Fixed shares were wrong here: the whole CWE catalogue is about 8 MB of text
+    # and ATT&CK about 12 MB, so a 5% share of a 2 GB slice reserved ten times
+    # what either could ever supply, and the systems corpus came out at half its
+    # share. So: a ceiling per source, smallest first, each handed whatever
+    # budget the earlier ones did not use. The large sources absorb the slack
+    # rather than stranding it.
     plan = [
-        (_man_pages, 0.18),
-        (_kernel_docs, 0.22),
-        (_rfcs, 0.25),
-        (_cwe, 0.05),
-        (_attack, 0.05),
-        (_cves, 0.25),
+        (_cwe, 50 * MB),            # the full catalogue, ~8 MB
+        (_attack, 50 * MB),         # enterprise techniques, ~12 MB
+        (_kernel_docs, 300 * MB),   # Documentation/*.rst, ~50 MB
+        (_man_pages, 300 * MB),     # whatever this box has installed
+        (_kernel_source, 800 * MB),  # the OS itself, in C
+        (_rfcs, 600 * MB),          # ~9,600 documents
+        (_cves, target_bytes),      # large, and last: it takes the remainder
     ]
     written = 0
     with out_path.open("w", encoding="utf-8") as sink:
-        for fetch, share in plan:
-            # Each source fills up to its own slice; an under-filled slice (an
-            # unreachable endpoint, a small local man set) just makes the systems
-            # corpus smaller rather than being redistributed. Honest over clever.
-            written += fetch(sink, int(target_bytes * share))
+        for fetch, cap in plan:
+            remaining = target_bytes - written
+            if remaining <= 0:
+                break
+            written += fetch(sink, min(cap, remaining))
     print(f"[systems] done: {human(written)}")
     return written
 
