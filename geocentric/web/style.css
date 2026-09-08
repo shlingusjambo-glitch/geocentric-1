@@ -1236,3 +1236,29 @@ dialog textarea,
 .canvas-open #main {
   margin-left: 0;
 }
+
+/* Short state transitions informed by Claude desktop; no token-by-token delays. */
+:root { --motion-quick: 150ms; --motion-panel: 240ms; --motion-ease: cubic-bezier(.2,.8,.2,1); }
+#sidebar { transition: transform var(--motion-panel) var(--motion-ease); }
+#main { transition: margin-left var(--motion-panel) var(--motion-ease); }
+#composer { transition: border-color var(--motion-quick), box-shadow var(--motion-quick); }
+#composer:focus-within { box-shadow: 0 0 0 1px var(--border); }
+#overlay { animation: surface-in 150ms ease-out; }
+dialog[open] { animation: dialog-in 180ms var(--motion-ease); }
+dialog::backdrop { animation: surface-in 150ms ease-out; }
+.message-enter { animation: message-in 180ms var(--motion-ease); }
+.response-arriving { animation: surface-in 180ms ease-out; }
+.typing {
+  width: 16px; height: 16px; border-radius: 50%; background: transparent;
+  border: 2px solid var(--border); border-top-color: var(--text);
+  animation: waiting-turn 1s linear infinite;
+}
+.message-actions { transition: opacity 150ms ease-out; }
+@media (hover: hover) and (pointer: fine) {
+  .message:not(:hover):not(:focus-within) .message-actions { opacity: 0; }
+}
+.generating #stop { animation: surface-in 120ms ease-out; }
+@keyframes surface-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+@keyframes message-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes waiting-turn { to { transform: rotate(360deg); } }

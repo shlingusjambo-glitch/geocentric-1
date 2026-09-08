@@ -84,6 +84,9 @@ test('streaming preserves earlier message nodes',async t=>{
   const done=w.unit.send();
   const user=w.document.querySelector('.message.user');
   await first;
+  assert.equal(w.document.body.classList.contains("generating"),true);
+  assert.equal(w.document.querySelector(".message.user").classList.contains("message-enter"),true);
+  assert.ok(w.document.querySelector(".response-arriving"));
   assert.equal(w.document.querySelector('.message.user'),user);
   assert.equal(w.document.querySelector('.message.assistant .body').textContent,'Hello');
   continueStream();await done;

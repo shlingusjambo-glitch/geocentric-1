@@ -76,3 +76,16 @@ Validation for this refinement: 13 Node/jsdom tests passed, including restored
 header titles, keyboard navigation, and the single settings entry. Live local
 browser review exercised inference, the narrow-layout sidebar, and opening Settings.
 This changes presentation and navigation, not model quality or GPU throughput.
+
+## Motion follow-up
+
+Inspected the installed Claude app through native computer use and read its bundled
+main-window CSS from app.asar. The inspected shell contained CSS transitions (including
+100–300ms utilities and eased attachment transitions), not GIF/MP4 chat animations.
+The remote chat UI and native shell are distinct; these observations do not establish
+an exact measurement of every Claude interaction.
+
+Geocentric now uses short eased sidebar transitions, subtle dialog/new-message entry,
+a neutral waiting indicator, and hover/focus reply actions. Tokens appear immediately;
+the first text arrival fades once, not on every streamed chunk. Reduced-motion overrides
+disable all transitions and animations. No Claude code, artwork, or media was bundled.

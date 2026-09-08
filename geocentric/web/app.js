@@ -548,6 +548,7 @@ document.addEventListener("keydown", (e) => {
 });
 function setBusy(value) {
   busy = value;
+  document.body.classList.toggle("generating", value);
   $("send").hidden = value;
   $("stop").hidden = !value;
   $("status").textContent = value ? "Generating…" : "";
@@ -587,6 +588,10 @@ async function send() {
   save();
   window.scrollTo(0, document.body.scrollHeight);
   const streamingBody = $("messages").lastElementChild.querySelector(".body");
+  const latestUser = $("messages").lastElementChild.previousElementSibling;
+  latestUser?.classList.add("message-enter");
+  streamingBody.classList.add("streaming");
+  let firstText = true;
   controller = new AbortController();
   requestId = uuid();
   let completed = false;
@@ -618,6 +623,10 @@ async function send() {
         const event = JSON.parse(line);
         if (event.type === "delta") {
           response.content += event.text;
+          if (firstText && event.text) {
+            streamingBody.classList.add("response-arriving");
+            firstText = false;
+          }
           const nearBottom =
             innerHeight + scrollY >= document.body.scrollHeight - 180;
           markdown(streamingBody, response.content);
