@@ -234,6 +234,42 @@ Ports and hosts: `MONITOR_PORT=9000 ./scripts/train_kestrel.sh` moves it;
 anyone who can reach the port can read training status — no checkpoints, no data,
 no control, but be aware it is unauthenticated.
 
+## Signing in to Hugging Face: what it does and does not buy
+
+Not speed. The corpus streamed at a sustained ~17 MB/s unauthenticated — 10.5 GB
+in ten minutes — so the "set a HF_TOKEN for faster downloads" warning is about
+rate-limit headroom, not throughput we were actually losing. A token is cheap
+insurance against being throttled mid-run, nothing more.
+
+**Access is the real reason.** The code slice is the weak point of this recipe.
+`bigcode/the-stack-smol-xl` is ungated and therefore what the script uses, but it
+is a *sampled* subset holding roughly 100 MB per language — nine languages
+returned 935 MB against a 4.9 GB slice. Widening to 56 languages reaches the
+target, but by breadth rather than by depth in the languages that matter most.
+
+The datasets that would fix it properly are gated:
+
+| dataset | status | what it would give |
+|---|---|---|
+| `bigcode/the-stack-dedup` | gated — token + accept terms | ~3 TB of deduplicated real repository code |
+| `bigcode/starcoderdata` | gated — token + accept terms | the StarCoder training corpus, curated |
+
+To switch:
+
+```bash
+huggingface-cli login                       # or: export HF_TOKEN=hf_...
+# then accept the licence on the dataset page in a browser, once:
+#   https://huggingface.co/datasets/bigcode/the-stack-dedup
+```
+
+and point the `code` entry in `scripts/download_kestrel.py` at
+`bigcode/the-stack-dedup` (its language directories are `data/<language>`, the
+same layout, so only `repo` changes). Delete `data/kestrel/pretrain/code.txt` and
+rerun `--only code`; every other source is skipped as already complete.
+
+Worth doing before the run reaches SFT if coding quality is the priority — a
+sampled subset teaches syntax, real repository code teaches idiom.
+
 ## What this will actually cost, and actually score
 
 **Time.** 5B tokens at roughly 6,000 tok/s — half the 120M's measured 12,900,
