@@ -49,11 +49,10 @@
       </button>
       <button class="nav-button" id="open-workshop">
         <span data-icon="canvas"></span>Canvas
-        <span class="new-label">NEW</span>
       </button>
       <div class="history-label">Conversations</div>
       <nav id="history" aria-label="Conversation history"></nav>
-      <button class="profile" id="profile">
+      <button class="profile" id="profile" aria-label="Settings">
         <img
           class="avatar mascot"
           src="/mascot.png"
@@ -74,29 +73,25 @@
             aria-label="Open sidebar"
             data-icon="panel"
           ></button
-          ><button id="model-menu" class="model-button">
-            Geocentric <span data-icon="chevron"></span></button
+          ><span id="conversation-title">New conversation</span
           ><span id="mode-badge" class="badge"></span>
         </div>
-        <button
-          class="icon-button"
-          id="settings-button"
-          aria-label="Settings"
-          data-icon="sliders"
-        ></button>
       </header>
       <div id="branch-banner" hidden></div>
       <div id="connection" role="status" hidden></div>
-      <section id="conversation" aria-label="Conversation" tabindex="0">
+      <section id="conversation" aria-label="Conversation" aria-describedby="reading-help" tabindex="0">
+        <p id="reading-help" class="sr-only">Use Up and Down arrow keys to move between messages when the conversation is focused.</p>
         <div id="messages"></div>
       </section>
       <section id="welcome">
+        <div class="welcome-heading">
         <img
           class="welcome-mascot mascot"
           src="/mascot.png"
           alt="Geocentric mascot"
         />
         <h1>Where shall we begin?</h1>
+        </div>
         <p id="welcome-description">
           A place to think, create, and explore. Start with what’s on your mind.
         </p>
@@ -112,11 +107,8 @@
             required
           ></textarea>
           <div class="composer-tools">
-            <button type="button" id="composer-settings" class="tool-button">
-              <span data-icon="sliders"></span
-              ><span id="composer-mode">Response settings</span></button
-            ><span id="status" aria-live="polite"></span
-            ><button
+            <span id="status" aria-live="polite"></span>
+            <span id="model-menu" class="model-button" title="Loaded model">Geocentric</span><button
               type="submit"
               id="send"
               class="send-button"

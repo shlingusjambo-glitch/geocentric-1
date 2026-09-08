@@ -37,6 +37,7 @@ test('restores active conversation and its draft',async t=>{
   const w=await setup(t,{'geocentric.chats.v1':JSON.stringify([chat]),'geocentric.active.v1':JSON.stringify('a'),'geocentric.draft.a':'An unfinished thought'});
   assert.equal(w.document.querySelector('#prompt').value,'An unfinished thought');
   assert.match(w.document.title,/Saved chat/);
+  assert.equal(w.document.querySelector('#conversation-title').textContent,'Saved chat');
   assert.equal(w.document.querySelector('[aria-current=page]').textContent,'Saved chat');
 });
 test('rename and undo deletion preserve messages',async t=>{
@@ -90,7 +91,7 @@ test('streaming preserves earlier message nodes',async t=>{
 });
 test('settings update mode and retain useful prompts',async t=>{
   const w=await setup(t);
-  w.document.querySelector('#settings-button').click();
+  w.document.querySelector('#profile').click();
   w.document.querySelector('#mode').value='chat';
   w.document.querySelector('#save-settings').click();
   assert.equal(w.document.querySelector('#mode-badge').textContent,'Chat');
@@ -159,4 +160,25 @@ test('failed request restores draft without leaving a duplicate user turn',async
   const chats=JSON.parse(w.localStorage.getItem('geocentric.chats.v1'));
   assert.equal(chats[0].messages.length,0);
   assert.match(w.document.querySelector('#error').textContent,/Model busy/);
+});
+
+test('conversation keyboard navigation preserves composer arrow keys',async t=>{
+  const chat={id:'a',title:'Reading',messages:[{role:'user',content:'Hello'},{role:'assistant',content:'Hi'}]};
+  const w=await setup(t,{'geocentric.chats.v1':JSON.stringify([chat]),'geocentric.active.v1':JSON.stringify('a')});
+  const conversation=w.document.querySelector('#conversation'), rows=w.document.querySelectorAll('.message');
+  conversation.focus();
+  conversation.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
+  assert.equal(w.document.activeElement,rows[0]);
+  rows[0].dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
+  assert.equal(w.document.activeElement,rows[1]);
+  const prompt=w.document.querySelector('#prompt');prompt.focus();
+  prompt.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true}));
+  assert.equal(w.document.activeElement,prompt);
+});
+test('one settings entry and a noninteractive loaded-model label',async t=>{
+  const w=await setup(t);
+  assert.equal(w.document.querySelectorAll('button[aria-label="Settings"]').length,1);
+  assert.equal(w.document.querySelector('#model-menu').tagName,'SPAN');
+  w.document.querySelector('#profile').click();
+  assert.equal(w.document.querySelector('#settings').open,true);
 });

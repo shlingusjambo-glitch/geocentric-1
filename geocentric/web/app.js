@@ -362,6 +362,8 @@ function render() {
     !current?.messages.length ||
     innerHeight + scrollY >= document.body.scrollHeight - 180;
   document.title = current ? current.title + " · Geocentric" : "Geocentric";
+  $("conversation-title").textContent = current?.title || "New conversation";
+  $("conversation-title").title = current?.title || "New conversation";
   const root = $("messages");
   root.replaceChildren();
   (current?.messages || []).forEach((message, index) => {
@@ -369,6 +371,7 @@ function render() {
     const row = document.createElement("article");
     row.className =
       "message " + (message.role === "user" ? "user" : "assistant");
+    row.tabIndex = -1;
     row.setAttribute(
       "aria-label",
       message.role === "user" ? "You" : "Geocentric",
@@ -508,6 +511,17 @@ $("prompt").addEventListener("keydown", (e) => {
     e.preventDefault();
     send();
   }
+});
+$("conversation").addEventListener("keydown", (e) => {
+  if (!['ArrowUp', 'ArrowDown'].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  if (e.target !== $("conversation") && !e.target.classList.contains('message')) return;
+  const messages = [...$("messages").children];
+  if (!messages.length) return;
+  e.preventDefault();
+  const index = messages.indexOf(e.target);
+  const next = index < 0 ? (e.key === 'ArrowDown' ? 0 : messages.length - 1)
+    : Math.max(0, Math.min(messages.length - 1, index + (e.key === 'ArrowDown' ? 1 : -1)));
+  messages[next].focus();
 });
 $("new-chat").onclick = () => {
   if (busy) return toast("Stop the current response first.");
@@ -666,13 +680,7 @@ function openSettings() {
     $(key).value = prefs[key] ?? "";
   $("settings").showModal();
 }
-for (const id of [
-  "settings-button",
-  "profile",
-  "model-menu",
-  "composer-settings",
-])
-  $(id).onclick = openSettings;
+$("profile").onclick = openSettings;
 $("close-settings").onclick = () => $("settings").close();
 $("save-settings").onclick = () => {
   for (const key of ["theme", "mode", "system"]) prefs[key] = $(key).value;
@@ -705,10 +713,8 @@ async function connect() {
     model = await response.json();
     prefs = { ...prefs, ...model.defaults, ...savedPrefs };
     prefs.system = prefs.system || "";
-    $("model-menu").replaceChildren(
-      document.createTextNode(model.name + " "),
-      icon("chevron"),
-    );
+    $("model-menu").textContent = model.name;
+    $("model-menu").title = model.name + " · Loaded model";
     $("mode-badge").textContent = model.mode === "base" ? "Base model" : "Chat";
     $("model-details").textContent =
       `${model.name} · ${(model.parameters / 1e6).toFixed(1)}M parameters · ${model.context.toLocaleString()} token context · ${model.device}`;
@@ -729,15 +735,12 @@ function updateWelcome() {
   if (!model) return;
   const base = (prefs.mode === "auto" ? model.mode : prefs.mode) === "base";
   $("mode-badge").textContent = base ? "Text continuation" : "Chat";
-  $("composer-mode").textContent = base
-    ? "Text continuation"
-    : "Response settings";
   $("prompt").placeholder = base
     ? "Start a thought. See where it goes…"
     : "Ask, imagine, or work through an idea…";
   $("welcome-description").textContent = base
-    ? "Every idea starts somewhere. Give your model a few words to continue."
-    : "A place to think, create, and explore. Start with what’s on your mind.";
+    ? "Give your local model a thought to continue."
+    : "Your local model. A conversation at your own pace.";
   const prompts = base
     ? [
         [
