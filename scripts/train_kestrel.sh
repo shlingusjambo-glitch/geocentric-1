@@ -15,6 +15,11 @@
 # Stages are separate so any can be rerun. Every stage resumes after Ctrl+C.
 set -euo pipefail
 
+# Python block-buffers stdout when it is a file, so progress lines for a stage
+# that runs for an hour arrive in 8 KB clumps -- and a tail of the log during a
+# download looks stalled when it is not.
+export PYTHONUNBUFFERED=1
+
 PY="${PY:-.venv/bin/python}"
 RUN_DIR="${RUN_DIR:-runs/kestrel-250m}"
 DATA_DIR="${DATA_DIR:-data/kestrel}"

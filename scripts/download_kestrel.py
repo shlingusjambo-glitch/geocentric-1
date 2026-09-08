@@ -61,7 +61,10 @@ PRETRAIN_SOURCES = {
     },
     "code": {
         "repo": "bigcode/the-stack-smol-xl", "config": None,
-        "split": "train", "field": "content", "share": 0.25,
+        # 0.25 was unreachable: 56 languages exhausted the ungated source at
+        # 4.0 GB. Sized to what it can actually supply, with the remainder moved
+        # to systems rather than left as a target that silently never fills.
+        "split": "train", "field": "content", "share": 0.19,
         # data_dir is set per language below; the loader iterates them in turn.
         # smol-xl holds roughly 100 MB per language, so nine of them yielded
         # 935 MB against a 4.9 GB slice -- code would have been 4.8% of the
@@ -103,7 +106,7 @@ PRETRAIN_SOURCES = {
         # Assembled from primary sources rather than a single HF repo; see
         # fetch_systems(). Kernel docs, man pages, RFCs, CWE, ATT&CK and CVEs
         # have no single HF mirror worth trusting.
-        "repo": None, "share": 0.10,
+        "repo": None, "share": 0.16,
     },
 }
 
@@ -515,7 +518,7 @@ def fetch_systems(target_bytes: int, out_path: Path, resume: bool) -> int:
         (_man_pages, 300 * MB),     # whatever this box has installed
         (_kernel_source, 800 * MB),  # the OS itself, in C
         (_rfcs, 600 * MB),          # ~9,600 documents
-        (_cves, target_bytes),      # large, and last: it takes the remainder
+        (_cves, 700 * MB),          # large, but capped: CVE prose is repetitive
     ]
     written = 0
     with out_path.open("w", encoding="utf-8") as sink:
