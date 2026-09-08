@@ -274,6 +274,9 @@ PAGE = """<!doctype html>
 <style>
 :root{color-scheme:dark;--bg:#0b0d10;--card:#14181d;--line:#232a32;--dim:#8b98a6;--fg:#e6edf3;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#58a6ff}
 *{box-sizing:border-box}
+/* .grid sets display:grid, which outranks the UA stylesheet's [hidden] rule and
+   leaves a "hidden" card on screen. Explicit beats implicit. */
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:16px}
 .wrap{max-width:760px;margin:0 auto}
 h1{font-size:17px;margin:0 0 2px;font-weight:600}
@@ -281,7 +284,7 @@ h1{font-size:17px;margin:0 0 2px;font-weight:600}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
 .bar{height:12px;background:#0b0d10;border-radius:6px;overflow:hidden;border:1px solid var(--line);margin:10px 0 6px}
 .fill{height:100%;background:linear-gradient(90deg,#1f6feb,#58a6ff);transition:width .6s ease}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px}
 .k{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
 .v{font-size:19px;margin-top:2px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
@@ -324,7 +327,7 @@ td.n{color:var(--fg)}td.r{text-align:right;font-variant-numeric:tabular-nums}
   <div class="msg" id="msg"></div>
 </div>
 
-<div class="card grid">
+<div class="card grid" id="metrics">
   <div><div class="k">loss</div><div class="v" id="loss">—</div></div>
   <div><div class="k">perplexity</div><div class="v" id="ppl">—</div></div>
   <div><div class="k">throughput</div><div class="v" id="tps">—</div></div>
@@ -333,12 +336,12 @@ td.n{color:var(--fg)}td.r{text-align:right;font-variant-numeric:tabular-nums}
   <div><div class="k">tokens seen</div><div class="v" id="toks">—</div></div>
 </div>
 
-<div class="card">
+<div class="card" id="histcard">
   <div class="k">loss history</div>
   <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"></svg>
 </div>
 
-<div class="card"><div class="k">loss guard</div><div class="sub" id="guard" style="margin:6px 0 0"></div></div>
+<div class="card" id="guardcard"><div class="k">loss guard</div><div class="sub" id="guard" style="margin:6px 0 0"></div></div>
 <footer id="foot"></footer>
 </div>
 <script>
@@ -378,6 +381,15 @@ async function tick(){
         +`<td class="r"><span class="mini"><i style="width:${(x.fraction*100).toFixed(0)}%"></i></span></td></tr>`;
     }).join("");
   } else { $("dlcard").hidden=true; $("trcard").hidden=false; }
+  for(const id of ["metrics","histcard","guardcard","trcard"]){
+    const el=$(id); if(el) el.hidden = d.pre_training && id!=="trcard";
+  }
+  if(d.pre_training){
+    $("trcard").hidden = st.stage===1;   // stage 1 has its own richer card
+    $("fill").style.width=((st.stage_fraction||0)*100).toFixed(1)+"%";
+    $("prog").textContent=st.stage_detail||"";
+    $("msg").textContent=st.stage_blurb||"";
+  }
   $("title").textContent=d.run+" · "+(st.stage_name||d.phase);
   $("dot").className="dot "+(d.alive?"live":(d.finished?"idle":"err"));
   const stale=d.stale_seconds>=0?Math.round(d.stale_seconds)+"s ago":"—";
