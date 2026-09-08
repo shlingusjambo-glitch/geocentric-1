@@ -257,10 +257,14 @@ The datasets that would fix it properly are gated:
 To switch:
 
 ```bash
-huggingface-cli login                       # or: export HF_TOKEN=hf_...
+# The CLI ships inside the venv; it is not on PATH, so `huggingface-cli login`
+# by itself gives "command not found".
+.venv/bin/hf auth login
 # then accept the licence on the dataset page in a browser, once:
 #   https://huggingface.co/datasets/bigcode/the-stack-dedup
 ```
+
+`export HF_TOKEN=hf_...` works just as well and needs no login step.
 
 and point the `code` entry in `scripts/download_kestrel.py` at
 `bigcode/the-stack-dedup` (its language directories are `data/<language>`, the
