@@ -62,9 +62,6 @@
       <button class="nav-button" id="conversation-map">
         <span data-icon="branch"></span>Conversation map
       </button>
-      <button class="nav-button" id="open-workshop">
-        <span data-icon="canvas"></span>Canvas
-      </button>
       <div class="history-label">Conversations</div>
       <nav id="history" aria-label="Conversation history"></nav>
       <button class="profile" id="profile" aria-label="Settings">
@@ -142,7 +139,7 @@
         </form>
         <p class="footnote">
           <span
-            >Arc is an AI system and can be wrong.
+            >Geocentric can make mistakes. Check important info.
             <a
               href="https://geocentricai.com/legal/ai-disclosure/"
               target="_blank"
@@ -174,7 +171,6 @@
           data-icon="close"
         ></button>
       </div>
-      <div id="model-details"></div>
       <label
         >Appearance<select id="theme">
           <option value="dark">Dark</option>
@@ -182,73 +178,48 @@
           <option value="system">System</option>
         </select></label
       >
-      <label
-        >Conversation mode<select id="mode">
-          <option value="auto">Automatic</option>
-          <option value="chat">Chat</option>
-          <option value="base">Text continuation</option>
-        </select></label
-      >
-      <p class="setting-help">
-        Automatic uses text continuation for a base model and chat formatting
-        for instruction-tuned models.
-      </p>
-      <p class="settings-section">Response preferences</p>
-      <label
-        >Temperature<input
-          id="temperature"
-          type="number"
+      <p class="settings-section">Creativity</p>
+      <div class="creativity" role="group" aria-labelledby="creativity-label">
+        <span id="creativity-label" class="sr-only">Response creativity</span>
+        <input
+          id="creativity"
+          type="range"
           min="0"
           max="2"
-          step="0.05"
-          value="0.8"
-      /></label>
-      <label
-        >Maximum new tokens<input
-          id="max_new_tokens"
-          type="number"
-          min="1"
-          max="4096"
           step="1"
-          value="256"
-      /></label>
-      <label
-        >Repetition penalty<input
-          id="repetition_penalty"
-          type="number"
-          min="1"
-          max="2"
-          step="0.05"
-          value="1.25"
-      /></label>
-      <label class="stacked"
-        >System instructions<textarea
-          id="system"
-          rows="3"
-          placeholder="You are a helpful assistant."
-        ></textarea>
-      </label>
-      <p class="setting-help">
-        Your conversation history is saved only in this browser.
+          value="2"
+          list="creativity-stops"
+          aria-describedby="creativity-help"
+        />
+        <datalist id="creativity-stops">
+          <option value="0" label="Precise"></option>
+          <option value="1" label="Balanced"></option>
+          <option value="2" label="Inventive"></option>
+        </datalist>
+        <div class="creativity-scale" aria-hidden="true">
+          <span>Precise</span><span>Balanced</span><span>Inventive</span>
+        </div>
+      </div>
+      <p class="setting-help" id="creativity-help">
+        Precise sticks closely to the likeliest wording. Inventive takes more
+        risks, and wanders further off the prompt.
       </p>
       <p class="settings-section">Privacy</p>
       <label class="consent-setting"
         ><input type="checkbox" id="training-consent" /><span
-          >Allow my prompts and responses to be used to improve and train
+          >Send my prompts and Geocentric's responses to help improve and train
           Geocentric models.</span
         ></label
       >
       <p class="setting-help">
-        Optional, and off unless you turn it on. Either way we keep prompts and
-        responses for up to 30 days to review safety and abuse, then delete
-        them. We never sell them.
+        Off unless you turn it on. Leave it off and your conversations are used
+        to answer you and are not kept afterwards.
         <a href="https://geocentricai.com/legal/privacy/" target="_blank" rel="noopener"
           >Privacy Policy</a
         >.
       </p>
       <p class="setting-help">
-        Arc is an AI system. It is often wrong about facts, arithmetic and
-        instructions.
+        Geocentric can make mistakes.
         <a href="https://geocentricai.com/legal/ai-disclosure/" target="_blank" rel="noopener"
           >What it gets wrong</a
         >
@@ -299,57 +270,74 @@
       </p>
       <div id="branch-map"></div>
     </dialog>
-    <section id="workshop" aria-labelledby="workshop-title" hidden>
-      <div class="workshop-head">
-        <div>
-          <p class="eyebrow">FROM WORDS TO SOMETHING REAL</p>
-          <h2 id="workshop-title">Canvas</h2>
+    <dialog id="report-dialog" aria-labelledby="report-title">
+      <form id="report-form" method="dialog">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">HELP US FIX IT</p>
+            <h2 id="report-title">Report a response</h2>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            id="close-report"
+            aria-label="Close report"
+            data-icon="close"
+          ></button>
         </div>
-        <button
-          id="close-workshop"
-          class="icon-button"
-          aria-label="Close canvas"
-          data-icon="close"
-        ></button>
-      </div>
-      <div class="workshop-toolbar">
-        <div role="group" aria-label="Canvas view">
-          <button id="show-preview" aria-pressed="true">Preview</button
-          ><button id="show-source" aria-pressed="false">Code</button>
+        <p class="report-intro">
+          Reports go to the people who train Geocentric. The more specific you
+          are, the more likely it gets fixed.
+        </p>
+        <label class="stacked"
+          >What went wrong?<textarea
+            id="report-wrong"
+            rows="3"
+            required
+            placeholder="It stated something false, ignored the instruction, produced unsafe content…"
+          ></textarea>
+        </label>
+        <label class="stacked"
+          >Why is that a problem?<textarea
+            id="report-reason"
+            rows="2"
+            placeholder="Someone could act on this, it broke the format I needed…"
+          ></textarea>
+        </label>
+        <label class="stacked"
+          >What did you expect instead?<textarea
+            id="report-expected"
+            rows="2"
+            placeholder="The answer you were looking for, or the behaviour you wanted."
+          ></textarea>
+        </label>
+        <label class="stacked"
+          >Anything else<textarea
+            id="report-notes"
+            rows="2"
+            placeholder="Optional notes."
+          ></textarea>
+        </label>
+        <details class="report-preview">
+          <summary>
+            What gets sent (<span id="report-count">0</span> messages)
+          </summary>
+          <pre id="report-transcript"></pre>
+        </details>
+        <label class="consent-setting report-confirm"
+          ><input type="checkbox" id="report-confirm" /><span
+            >I understand this sends the whole conversation shown above, along
+            with what I have written here, to Geocentric.</span
+          ></label
+        >
+        <div class="dialog-actions">
+          <button type="button" id="cancel-report">Cancel</button
+          ><button type="button" id="send-report" class="primary" disabled>
+            Send report
+          </button>
         </div>
-        <button id="run-canvas">Run changes <span>⌘ ↵</span></button>
-      </div>
-      <div id="canvas-stage">
-        <iframe
-          id="canvas-frame"
-          name="geocentric-canvas"
-          title="Isolated artifact preview"
-          sandbox="allow-scripts"
-          referrerpolicy="no-referrer"
-        ></iframe>
-      </div>
-      <textarea
-        id="canvas-source"
-        aria-label="Artifact source code"
-        spellcheck="false"
-        hidden
-      ></textarea>
-      <div class="canvas-footer">
-        <span id="canvas-status" aria-live="polite"
-          >HTML, CSS and inline JavaScript. External resources are
-          blocked.</span
-        ><button id="download-canvas">Download HTML</button>
-      </div>
-    </section>
-    <form
-      id="canvas-transport"
-      method="post"
-      action="/api/preview"
-      target="geocentric-canvas"
-      hidden
-    >
-      <textarea name="code" id="canvas-payload"></textarea>
-    </form>
+      </form>
+    </dialog>
     <div id="toast" role="status" hidden></div>
   </body>
 </html>

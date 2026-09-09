@@ -1,6 +1,7 @@
 """Bundled LAN inference server. No Node, cloud service, or model uploads required."""
 from __future__ import annotations
 
+import gzip
 import ipaddress
 import json
 import math
@@ -10,7 +11,7 @@ import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit
 
 import torch
 
@@ -18,6 +19,7 @@ from geocentric.chat import DEFAULT_SYSTEM
 from geocentric.checkpoint import load_model_and_tokenizer
 from geocentric.device import resolve_dtype, select_device
 from geocentric.generate import build_chat_prompt, stream_text
+from geocentric.load import LoadMonitor, paced
 from geocentric.testers import TesterRegistry
 from geocentric.transcripts import TranscriptStore
 
@@ -74,6 +76,7 @@ class ChatEngine:
         self.defaults = defaults or {}
         self.transcripts = transcripts
         self.testers = testers
+        self.load = LoadMonitor()
         self.lock = threading.Lock()
         self.requests = {}
         self.request_lock = threading.Lock()
@@ -136,13 +139,16 @@ class ChatEngine:
             raise ValueError("tester_key must be text")
         return prompt, options, request_id, training_consent, tester
 
-    def stream(self, prompt, options, event, stats):
+    def stream(self, prompt, options, event, stats, tokens_per_second=None):
+        """Generate, held to the serving rate cap so one caller cannot take the
+        whole machine. The cap is read once per request, not per token."""
         device = next(self.model.parameters()).device
         # Autocast/inference_mode are thread-local: enter in the request thread.
         with torch.inference_mode(), torch.autocast(device.type, dtype=self.dtype,
                                                     enabled=self.dtype != torch.float32):
-            yield from stream_text(self.model, self.tokenizer, prompt, cancel_event=event,
-                                   stats=stats, loop_guard=True, **options)
+            chunks = stream_text(self.model, self.tokenizer, prompt, cancel_event=event,
+                                 stats=stats, loop_guard=True, **options)
+            yield from paced(chunks, tokens_per_second)
 
 
 class ChatServer(ThreadingHTTPServer):
@@ -162,9 +168,17 @@ class ChatHandler(BaseHTTPRequestHandler):
         # when the operator started the server with --transcripts.
         pass
 
-    def send_response_headers(self, status, content_type, preview=False):
+    def wants_gzip(self):
+        return "gzip" in self.headers.get("Accept-Encoding", "").lower()
+
+    def send_response_headers(self, status, content_type, gzipped=False, length=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type + "; charset=utf-8")
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        if length is not None:
+            self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -173,31 +187,49 @@ class ChatHandler(BaseHTTPRequestHandler):
         # Only meaningful behind TLS; harmless on a LAN server, which browsers
         # ignore it on because the connection is not HTTPS.
         self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-        policy = ("sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
-                  "style-src 'unsafe-inline'; img-src data:; font-src data:; "
-                  "connect-src 'none'; frame-src 'none'; object-src 'none'; "
-                  "form-action 'none'; base-uri 'none'; frame-ancestors 'self'") if preview else (
-                  "default-src 'self'; script-src 'self'; style-src 'self'; "
-                  "img-src 'self' data:; connect-src 'self'; frame-src 'self'; "
-                  "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        policy = ("default-src 'self'; script-src 'self'; style-src 'self'; "
+                  "img-src 'self' data:; connect-src 'self'; frame-src 'none'; "
+                  "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+                  "form-action 'self'")
         self.send_header("Content-Security-Policy", policy)
         self.end_headers()
 
     def json_response(self, status, payload):
-        self.send_response_headers(status, "application/json")
-        self.wfile.write(json.dumps(payload).encode())
+        # Compact separators: no spaces to pay for on a phone over Wi-Fi.
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        gzipped = self.wants_gzip() and len(body) > 512
+        if gzipped:
+            body = gzip.compress(body, 6)
+        self.send_response_headers(status, "application/json", gzipped, len(body))
+        self.wfile.write(body)
 
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/api/model":
             return self.json_response(200, self.server.engine.info())
+        if path == "/api/status":
+            return self.json_response(200, self.server.engine.load.state())
         if path == "/health":
             return self.json_response(200, {"status": "ok"})
         if path not in ASSETS:
             return self.json_response(404, {"error": "Not found"})
         filename, content_type = ASSETS[path]
-        self.send_response_headers(200, content_type)
-        self.wfile.write((STATIC / filename).read_bytes())
+        body = self._asset(filename)
+        # PNGs are already compressed; gzip would only add bytes and CPU.
+        gzipped = self.wants_gzip() and not filename.endswith(".png")
+        if gzipped:
+            body = gzip.compress(body, 6)
+        self.send_response_headers(200, content_type, gzipped, len(body))
+        self.wfile.write(body)
+
+    _asset_cache = {}
+
+    @classmethod
+    def _asset(cls, filename):
+        """Read once. These files do not change while the server is running."""
+        if filename not in cls._asset_cache:
+            cls._asset_cache[filename] = (STATIC / filename).read_bytes()
+        return cls._asset_cache[filename]
 
     def do_POST(self):
         # Require same-origin browser writes. No permissive CORS, proxy URLs,
@@ -211,16 +243,6 @@ class ChatHandler(BaseHTTPRequestHandler):
                 return self.json_response(413, {"error": "Request exceeds 256 KiB"})
             self.connection.settimeout(120)
             body = self.rfile.read(length)
-            if self.path == "/api/preview":
-                if self.headers.get_content_type() != "application/x-www-form-urlencoded":
-                    return self.json_response(415, {"error": "Expected form-encoded source"})
-                fields = parse_qs(body.decode("utf-8"), max_num_fields=2, keep_blank_values=True)
-                codes = fields.get("code", [])
-                if len(codes) != 1 or len(codes[0].encode("utf-8")) > 60000:
-                    return self.json_response(400, {"error": "Send one code field, up to 60 KB"})
-                self.send_response_headers(200, "text/html", preview=True)
-                self.wfile.write(codes[0].encode("utf-8"))
-                return
             payload = json.loads(body)
         except (ValueError, OSError):
             return self.json_response(400, {"error": "Invalid JSON request"})
@@ -242,6 +264,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not label:
                 return self.json_response(403, {"error": "That access key was not recognised"})
             return self.json_response(200, {"ok": True, "label": label})
+        if self.path == "/api/report":
+            return self.handle_report(payload, engine)
         if self.path != "/api/chat":
             return self.json_response(404, {"error": "Not found"})
         try:
@@ -249,25 +273,28 @@ class ChatHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self.json_response(400, {"error": str(exc)})
         if not engine.lock.acquire(blocking=False):
+            engine.load.note_contention()
             return self.json_response(429, {"error": "The model is answering another request. Try again shortly."})
         event, stats = threading.Event(), {}
         with engine.request_lock:
             engine.requests[request_id] = event
         try:
+            load = engine.load.state()
             self.send_response_headers(200, "application/x-ndjson")
-            self.emit({"type": "start", "request_id": request_id})
+            self.emit({"type": "start", "request_id": request_id, "load": load})
             reply = []
-            for chunk in engine.stream(prompt, options, event, stats):
+            for chunk in engine.stream(prompt, options, event, stats,
+                                       load["tokens_per_second"]):
                 reply.append(chunk)
                 self.emit({"type": "delta", "text": chunk})
             self.emit({"type": "done", **stats})
-            if engine.transcripts:
-                tester = engine.testers.verify(tester_key) if (engine.testers and tester_key) else None
-                # An authorised tester may be under 16, so their exchanges are
-                # never eligible for training regardless of the opt-in.
-                engine.transcripts.record(prompt, "".join(reply),
-                                          training_consent and not tester,
-                                          request_id, stats, tester=tester)
+            tester = engine.testers.verify(tester_key) if (engine.testers and tester_key) else None
+            # Nothing is retained unless the user opted in, and an authorised
+            # tester may be under 16, so their exchanges are never retained for
+            # training at all.
+            if engine.transcripts and training_consent and not tester:
+                engine.transcripts.record(prompt, "".join(reply), True,
+                                          request_id, stats)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             event.set()
         except Exception as exc:
@@ -281,8 +308,40 @@ class ChatHandler(BaseHTTPRequestHandler):
                 engine.requests.pop(request_id, None)
             engine.lock.release()
 
+    def handle_report(self, payload, engine):
+        """A report the user explicitly chose to send, having seen its contents."""
+        if not isinstance(payload, dict):
+            return self.json_response(400, {"error": "Expected a JSON object"})
+        wrong = (payload.get("what_went_wrong") or "").strip()
+        if not wrong:
+            return self.json_response(400, {"error": "Tell us what went wrong"})
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or len(messages) > 200:
+            return self.json_response(400, {"error": "Send up to 200 messages"})
+        if engine.transcripts is None:
+            # Nowhere to put it; say so rather than pretend it was received.
+            return self.json_response(503, {"error": "Reporting is not enabled on this server"})
+        report = {
+            "what_went_wrong": wrong[:4000],
+            "why": (payload.get("why") or "").strip()[:4000],
+            "expected": (payload.get("expected") or "").strip()[:4000],
+            "notes": (payload.get("notes") or "").strip()[:4000],
+            "messages": [
+                {"role": str(m.get("role", ""))[:16], "content": str(m.get("content", ""))[:100000]}
+                for m in messages if isinstance(m, dict)
+            ],
+        }
+        if not engine.transcripts.record_report(report):
+            return self.json_response(500, {"error": "Could not store the report"})
+        return self.json_response(200, {"ok": True})
+
     def emit(self, payload):
-        self.wfile.write((json.dumps(payload, ensure_ascii=False) + "\n").encode())
+        # Compact separators only. The stream is not gzipped on purpose: a
+        # compressor buffers, and buffering is what makes a token stream feel
+        # slow. Each frame is a few bytes of JSON around the text itself.
+        self.wfile.write(
+            (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+        )
         self.wfile.flush()
 
 
@@ -312,10 +371,13 @@ def serve(args):
         if testers:
             print(f"  Authorised-tester access enabled: {len(testers.records)} key(s).", flush=True)
         if transcripts:
-            print(f"  Retaining prompts and responses in {transcripts.dir} "
-                  f"for {transcripts.retention_days} days.", flush=True)
+            print(f"  Opt-in retention on: consented conversations and reports go to "
+                  f"{transcripts.dir} and expire after {transcripts.retention_days} days.",
+                  flush=True)
         else:
-            print("  Not retaining prompts or responses.", flush=True)
+            print("  Retention off: nothing is stored, and reporting is disabled.", flush=True)
+        print(f"  Serving at up to {engine.load.normal:.0f} tokens/sec per request, "
+              f"{engine.load.high:.0f} under load.", flush=True)
         print("  Chats stay in this browser. Anyone on the reachable LAN can use this server.\n"
               "  Press Ctrl+C to stop. Use --host 127.0.0.1 for localhost only.\n", flush=True)
         if not args.no_browser:

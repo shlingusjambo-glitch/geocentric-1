@@ -2,7 +2,6 @@
 const $ = (id) => document.getElementById(id);
 const paths = {
   branch: "M6 3v12a4 4 0 0 0 4 4h8M6 8h8a4 4 0 0 0 4-4M3 3h6M15 3h6M15 19h6",
-  canvas: "M3 4h18v16H3zM3 9h18M8 9v11",
   panel:
     "M8 3v18M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1",
   compose:
@@ -17,6 +16,7 @@ const paths = {
   close: "m6 6 12 12M6 18 18 6",
   copy: "M9 9h11v11H9zM5 15H3V3h12v2",
   retry: "M20 7v5h-5M20 12a8 8 0 1 0-2 6",
+  flag: "M5 21V4m0 0 6 2 4-2 4 2v9l-4-2-4 2-6-2",
   trash: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7",
 };
 function icon(name) {
@@ -48,14 +48,10 @@ chats = chats.filter(
     Array.isArray(c.messages),
 );
 const savedPrefs = stored("geocentric.settings.v1", {});
-let prefs = stored("geocentric.settings.v1", {
-  theme: "dark",
-  mode: "auto",
-  temperature: 0.8,
-  max_new_tokens: 256,
-  repetition_penalty: 1.25,
-  system: "",
-});
+/* Generation settings are internal and not user-editable. The only exposed
+   control is creativity, which selects one of three temperatures. */
+const CREATIVITY = [0.3, 0.6, 0.8];
+let prefs = stored("geocentric.settings.v1", { theme: "dark", creativity: 2 });
 if (!prefs || typeof prefs !== "object") prefs = { theme: "dark" };
 /* Consent is shared with geocentricai.com through a cookie on the parent
    domain, so a visitor who already agreed there is not asked again here.
@@ -293,12 +289,6 @@ function markdown(target, text) {
       code.textContent = codeText;
       pre.append(code);
       head.append(label, copy);
-      if (["html", "htm", "svg"].includes(label.textContent.toLowerCase())) {
-        const preview = document.createElement("button");
-        preview.textContent = "Open in Canvas";
-        preview.onclick = () => openCanvas(codeText);
-        head.append(preview);
-      }
       wrap.append(head, pre);
       target.append(wrap);
       return;
@@ -454,13 +444,17 @@ function render() {
           }
         }),
       );
-    if (message.role === "assistant")
+    if (message.role === "assistant") {
       actions.append(
         action("Branch from here", "branch", () => {
           if (busy) return toast("Stop the current response first.");
           forkConversation(current, index + 1, "New direction");
         }),
       );
+      actions.append(
+        action("Report this response", "flag", () => openReport(index)),
+      );
+    }
     if (message.stats) {
       const meta = document.createElement("span");
       meta.className = "message-meta";
@@ -630,7 +624,7 @@ async function send() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ...prefs,
+        temperature: CREATIVITY[prefs.creativity ?? 2] ?? 0.8,
         messages: outgoing,
         request_id: requestId,
         training_consent: Boolean(consent?.training),
@@ -653,7 +647,10 @@ async function send() {
       for (const line of lines) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
-        if (event.type === "delta") {
+        if (event.type === "start") {
+          // The server states the cap it is applying to this very request.
+          announceLoad(event.load);
+        } else if (event.type === "delta") {
           response.content += event.text;
           if (firstText && event.text) {
             streamingBody.classList.add("response-arriving");
@@ -710,26 +707,16 @@ $("stop").onclick = async () => {
   controller?.abort();
 };
 function openSettings() {
-  for (const key of [
-    "theme",
-    "mode",
-    "temperature",
-    "max_new_tokens",
-    "repetition_penalty",
-    "system",
-  ])
-    $(key).value = prefs[key] ?? "";
+  $("theme").value = prefs.theme ?? "dark";
+  $("creativity").value = String(prefs.creativity ?? 2);
   $("training-consent").checked = Boolean(consent?.training);
   $("settings").showModal();
 }
 $("profile").onclick = openSettings;
 $("close-settings").onclick = () => $("settings").close();
 $("save-settings").onclick = () => {
-  for (const key of ["theme", "mode", "system"]) prefs[key] = $(key).value;
-  for (const key of ["temperature", "max_new_tokens", "repetition_penalty"]) {
-    if (!$(key).checkValidity()) return $(key).reportValidity();
-    prefs[key] = Number($(key).value);
-  }
+  prefs.theme = $("theme").value;
+  prefs.creativity = Math.min(2, Math.max(0, Number($("creativity").value) || 0));
   try {
     localStorage.setItem("geocentric.settings.v1", JSON.stringify(prefs));
   } catch {}
@@ -754,21 +741,13 @@ async function connect() {
     const response = await fetch("/api/model");
     if (!response.ok) throw Error("Cannot reach the model server.");
     model = await response.json();
-    prefs = { ...prefs, ...model.defaults, ...savedPrefs };
-    prefs.system = prefs.system || "";
+    prefs = { theme: "dark", creativity: 2, ...savedPrefs };
     // The checkpoint reports its training name; the public model is called Arc
     // (https://geocentricai.com/models/arc/). Display the public name.
     const displayName = model.name === "Geocentric" ? "Arc" : model.name;
     $("model-menu").textContent = displayName;
     $("model-menu").title = displayName + " · Loaded model";
     $("mode-badge").textContent = model.mode === "base" ? "Base model" : "Chat";
-    $("model-details").textContent =
-      `${displayName} · ${(model.parameters / 1e6).toFixed(1)}M parameters · ${model.context.toLocaleString()} token context · ${model.device}`;
-    $("max_new_tokens").max = Math.min(4096, model.context - 1);
-    prefs.max_new_tokens = Math.min(
-      prefs.max_new_tokens || model.defaults.max_new_tokens || 256,
-      model.context - 1,
-    );
     $("connection").hidden = true;
     updateWelcome();
   } catch (error) {
@@ -779,7 +758,7 @@ async function connect() {
 }
 function updateWelcome() {
   if (!model) return;
-  const base = (prefs.mode === "auto" ? model.mode : prefs.mode) === "base";
+  const base = model.mode === "base";  // the served checkpoint decides this, not the user
   $("mode-badge").textContent = base ? "Text continuation" : "Chat";
   $("prompt").placeholder = base
     ? "Start a thought. See where it goes…"
@@ -947,93 +926,6 @@ function showMap() {
 }
 $("conversation-map").onclick = showMap;
 $("close-map").onclick = () => $("map-dialog").close();
-function canvasView(source) {
-  $("canvas-source").hidden = !source;
-  $("canvas-stage").hidden = source;
-  $("show-source").setAttribute("aria-pressed", String(source));
-  $("show-preview").setAttribute("aria-pressed", String(!source));
-}
-function runCanvas() {
-  const code = $("canvas-source").value;
-  if (new TextEncoder().encode(code).length > 60000)
-    return toast("Canvas supports up to 60 KB of source code.");
-  $("canvas-payload").value = code;
-  $("canvas-transport").submit();
-  canvasView(false);
-  $("canvas-status").textContent =
-    "Preview refreshed · external resources blocked";
-  try {
-    localStorage.setItem("geocentric.canvas.v1", code);
-  } catch {}
-}
-function canvasFocusMode() {
-  const modal = !$("workshop").hidden && innerWidth <= 1100;
-  $("main").inert = modal;
-  $("sidebar").inert = modal;
-  $("workshop").setAttribute("role", modal ? "dialog" : "region");
-  if (modal) $("workshop").setAttribute("aria-modal", "true");
-  else $("workshop").removeAttribute("aria-modal");
-}
-window.addEventListener("resize", canvasFocusMode);
-document.addEventListener("keydown", (e) => {
-  if (
-    e.key === "Escape" &&
-    !$("workshop").hidden &&
-    !document.querySelector("dialog[open]")
-  )
-    $("close-workshop").click();
-});
-function openCanvas(code) {
-  $("canvas-source").value = code;
-  $("workshop").hidden = false;
-  document.body.classList.add("canvas-open");
-  canvasFocusMode();
-  runCanvas();
-  $("close-workshop").focus({ preventScroll: true });
-}
-$("close-workshop").onclick = () => {
-  $("workshop").hidden = true;
-  document.body.classList.remove("canvas-open");
-  canvasFocusMode();
-  try {
-    localStorage.setItem("geocentric.canvas.v1", $("canvas-source").value);
-  } catch {}
-  $("canvas-frame").src = "about:blank"; // Stop timers and scripts when the preview closes.
-  $("open-workshop").focus({ preventScroll: true });
-};
-$("show-source").onclick = () => canvasView(true);
-$("show-preview").onclick = () => canvasView(false);
-$("run-canvas").onclick = runCanvas;
-$("canvas-source").addEventListener("input", () => {
-  $("canvas-status").textContent =
-    "Unsaved changes · run to refresh the preview";
-});
-$("canvas-source").addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-    e.preventDefault();
-    runCanvas();
-  }
-});
-$("download-canvas").onclick = () => {
-  const blob = new Blob([$("canvas-source").value], { type: "text/html" }),
-    url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "geocentric-canvas.html";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-};
-const canvasStarter = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A little room to think</title>
-<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#faf8f5;color:#27251e;font:16px system-ui;padding:32px}main{max-width:420px;width:100%}small{letter-spacing:.14em;font-size:10px;color:#72706b}h1{font-size:38px;font-weight:500;letter-spacing:-.04em;margin:22px 0}p{line-height:1.8;color:#72706b}button{background:#30372b;color:#faf8f5;border:0;border-radius:8px;padding:12px 18px;font:inherit;cursor:pointer}#idea{min-height:86px;border-left:2px solid #9bad89;padding-left:18px;margin:28px 0}</style>
-<main><small>YOUR LOCAL CREATIVE SPACE</small><h1>A little room to think.</h1><p>This is a working canvas. Edit the code, try an idea, and make something your own.</p><p id="idea">What would you make if you started small?</p><button id="next">Give me a spark ↗</button></main>
-<script>const ideas=['What would you make if you started small?','Explain a complicated idea with one simple interaction.','Build a tiny tool that makes tomorrow a little easier.','Turn your notes into a place you want to revisit.'];let i=0;document.getElementById('next').onclick=()=>{document.getElementById('idea').textContent=ideas[++i%ideas.length]};<\/script></html>`;
-$("open-workshop").onclick = () => {
-  let saved;
-  try {
-    saved = localStorage.getItem("geocentric.canvas.v1");
-  } catch {}
-  openCanvas(saved || canvasStarter);
-};
 const shortcut = document.querySelector(".shortcut");
 shortcut.textContent = /Mac|iPhone|iPad/.test(navigator.platform)
   ? "⌘ K"
@@ -1062,12 +954,12 @@ function openConsent(existing, onClose) {
       </div>
       <div class="consent-step" data-step="terms" hidden>
         <h2>Before you use Arc</h2>
-        <p>Arc is an AI system, not a person. It is often wrong about facts, arithmetic and instructions, and you are responsible for what you submit and for what you do with what it returns.</p>
+        <p>Geocentric can make mistakes. It is often wrong about facts, arithmetic and instructions, and you are responsible for what you submit and for what you do with what it returns.</p>
         <p>Using it means agreeing to our <a href="${LEGAL}/terms/" target="_blank" rel="noopener">Terms of Service</a> and <a href="${LEGAL}/acceptable-use/" target="_blank" rel="noopener">Acceptable Use Policy</a>.</p>
-        <p class="consent-fine">We keep prompts and model responses for up to 30 days to review safety and abuse, then delete them. We never sell them. Your conversation history is saved in this browser. <a href="${LEGAL}/privacy/" target="_blank" rel="noopener">Privacy Policy</a></p>
+        <p class="consent-fine">Leave that off and we keep no record of your conversations. We never sell them. Your history is saved in this browser. <a href="${LEGAL}/privacy/" target="_blank" rel="noopener">Privacy Policy</a></p>
         <label class="consent-opt">
           <input type="checkbox" data-field="training" />
-          <span>Allow my prompts and responses to be used to improve and train Geocentric models. <em>Optional. Off unless you tick it, and you can change it any time in Settings.</em></span>
+          <span>Send my prompts and Geocentric's responses to help improve and train Geocentric models. <em>Optional. Off unless you tick it, and you can change it any time in Settings.</em></span>
         </label>
         <div class="consent-actions">
           <button type="button" class="primary" data-action="accept">Agree and continue</button>
@@ -1083,7 +975,7 @@ function openConsent(existing, onClose) {
       <div class="consent-step" data-step="tester" hidden>
         <h2>Authorised tester access</h2>
         <p>Geocentric authorises specific people to use Arc for development, safety testing, and age-suitability review, including people under 16. Access is by key, issued to you by name.</p>
-        <p class="consent-fine">Your conversations are recorded as internal testing, are never used to train models, and are deleted on the same 30-day schedule. If you are under 16, this requires a written agreement with your parent or guardian already in place. <a href="${LEGAL}/childrens-privacy/#testers" target="_blank" rel="noopener">How this works</a></p>
+        <p class="consent-fine">Your conversations are never retained for training, and anything kept for the engagement is deleted within 30 days. If you are under 16, this requires a written agreement with your parent or guardian already in place. <a href="${LEGAL}/childrens-privacy/#testers" target="_blank" rel="noopener">How this works</a></p>
         <label class="consent-field">Access key<input type="text" data-field="tester-key" autocomplete="off" spellcheck="false" /></label>
         <p class="consent-error" data-role="tester-error" hidden></p>
         <div class="consent-actions">
@@ -1174,3 +1066,168 @@ function openConsent(existing, onClose) {
   show(existing ? "terms" : "age");
 }
 if (!consent || consent.terms !== TERMS_VERSION) openConsent(null);
+
+/* ── Reporting a response ─────────────────────────────────────────────────
+   Sends the conversation on screen plus what the reporter wrote. Nothing
+   leaves the browser until the confirmation box is ticked, and the transcript
+   is shown in full first so "I understand what I am sending" is true. */
+let reportIndex = null;
+
+function reportTranscript() {
+  if (!current) return [];
+  return current.messages
+    .slice(0, reportIndex === null ? undefined : reportIndex + 1)
+    .map((m) => ({ role: m.role, content: m.content }));
+}
+
+function openReport(index) {
+  reportIndex = index;
+  const messages = reportTranscript();
+  $("report-count").textContent = String(messages.length);
+  $("report-transcript").textContent = messages
+    .map((m) => `${m.role === "user" ? "You" : "Geocentric"}: ${m.content}`)
+    .join("\n\n");
+  for (const id of ["report-wrong", "report-reason", "report-expected", "report-notes"])
+    $(id).value = "";
+  $("report-confirm").checked = false;
+  $("send-report").disabled = true;
+  $("report-dialog").showModal();
+  $("report-wrong").focus();
+}
+
+$("report-confirm").onchange = () => {
+  $("send-report").disabled = !$("report-confirm").checked;
+};
+$("close-report").onclick = () => $("report-dialog").close();
+$("cancel-report").onclick = () => $("report-dialog").close();
+
+$("send-report").onclick = async () => {
+  if (!$("report-confirm").checked) return;
+  const wrong = $("report-wrong").value.trim();
+  if (!wrong) {
+    $("report-wrong").focus();
+    return toast("Tell us what went wrong first.");
+  }
+  const button = $("send-report");
+  button.disabled = true;
+  button.textContent = "Sending…";
+  try {
+    const response = await fetch("/api/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        what_went_wrong: wrong,
+        why: $("report-reason").value.trim(),
+        expected: $("report-expected").value.trim(),
+        notes: $("report-notes").value.trim(),
+        messages: reportTranscript(),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result?.error || "Could not send the report.");
+    $("report-dialog").close();
+    toast("Thank you. You have made Geocentric safer for everyone.");
+  } catch (failure) {
+    toast(failure.message || "Could not reach the server. Try again shortly.");
+  } finally {
+    button.textContent = "Send report";
+    button.disabled = !$("report-confirm").checked;
+  }
+};
+
+/* ── Serving load ─────────────────────────────────────────────────────────
+   Every request is paced to a fixed tokens-per-second ceiling, which drops
+   when the machine is hot or people are queueing. The server owns that state;
+   we poll it and announce transitions. The last state we told the user about
+   is kept in localStorage and compared by the server's generation counter, so
+   a refresh does not repeat a notice, and coming back after an hour away still
+   gets told what changed while nobody was looking. */
+const LOAD_KEY = "geocentric.load.v1";
+const LOAD_POLL_MS = 30000;
+let loadState = null;
+
+function lastAnnounced() {
+  try {
+    return JSON.parse(localStorage.getItem(LOAD_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function rememberAnnounced(state) {
+  try {
+    localStorage.setItem(
+      LOAD_KEY,
+      JSON.stringify({ load: state.load, generation: state.generation }),
+    );
+  } catch {}
+}
+
+function announceLoad(state) {
+  if (!state || typeof state.generation !== "number") return;
+  loadState = state;
+  const previous = lastAnnounced();
+  const known = previous && previous.generation === state.generation;
+  rememberAnnounced(state);
+  // First ever visit while everything is normal is not news.
+  if (known || (!previous && state.load === "normal")) return;
+  if (state.load === "high") {
+    showNotice(
+      "Responses are slower right now",
+      state.reason === "thermal"
+        ? "The machine serving Geocentric is running hot, so we have lowered the generation speed to keep it stable. Everything still works — answers will just arrive more gradually."
+        : "More people are using Geocentric than it can serve at full speed, so we have lowered the generation speed to keep it responsive for everyone. Everything still works — answers will just arrive more gradually.",
+    );
+  } else {
+    showNotice(
+      "Full speed is back",
+      "Geocentric is no longer under heavy load. Responses are generating at the usual speed again.",
+    );
+  }
+}
+
+function showNotice(title, body) {
+  document.querySelector(".load-notice")?.remove();
+  const layer = document.createElement("div");
+  layer.className = "consent-layer load-notice";
+  layer.innerHTML = `
+    <div class="consent-card" role="dialog" aria-modal="true" aria-labelledby="load-title">
+      <h2 id="load-title"></h2>
+      <p></p>
+      <div class="consent-actions">
+        <button type="button" class="primary" data-action="dismiss">Got it</button>
+      </div>
+    </div>`;
+  layer.querySelector("h2").textContent = title;
+  layer.querySelector("p").textContent = body;
+  const close = () => {
+    layer.remove();
+    document.body.classList.remove("consent-open");
+  };
+  layer.addEventListener("click", (event) => {
+    if (event.target.closest('[data-action="dismiss"]')) close();
+  });
+  layer.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") close();
+  });
+  document.body.appendChild(layer);
+  document.body.classList.add("consent-open");
+  layer.querySelector("button").focus();
+}
+
+async function pollLoad() {
+  try {
+    const response = await fetch("/api/status");
+    if (response.ok) announceLoad(await response.json());
+  } catch {
+    // Offline or the server is down; the banner already says so.
+  }
+}
+
+pollLoad();
+setInterval(pollLoad, LOAD_POLL_MS);
+// Coming back to the tab after a while is exactly when the state may have moved.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) pollLoad();
+});
+

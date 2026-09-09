@@ -3,9 +3,12 @@
 The published policy (https://geocentricai.com/legal/privacy/) says two things
 that this module is responsible for making true:
 
-  * prompts and model responses are kept for at most 30 days, then deleted;
-  * they are used to train models only where the user opted in, which arrives
-    as `training_consent` on the chat request.
+  * nothing is kept unless the user opted in. `training_consent` on the chat
+    request is what decides it, and it is off by default;
+  * what is kept is deleted within 30 days.
+
+It also holds reports submitted from the chat interface, which are a separate
+opt-in: the reporter sees the transcript and ticks a box before it is sent.
 
 Storage is one JSON Lines file per UTC day, so expiry is a file deletion rather
 than a rewrite, and an interrupted append costs at most the last line. Off
@@ -30,14 +33,33 @@ class TranscriptStore:
         self._lock = threading.Lock()
         self.purge()
 
-    def _path(self, when):
-        return self.dir / f"{when:%Y-%m-%d}.jsonl"
+    def _path(self, when, kind="chat"):
+        stem = f"{when:%Y-%m-%d}" if kind == "chat" else f"{kind}-{when:%Y-%m-%d}"
+        return self.dir / f"{stem}.jsonl"
+
+    def _append(self, row, kind="chat"):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        try:
+            with self._lock, self._path(now, kind).open("a", encoding="utf-8") as sink:
+                sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+            return True
+        except OSError:
+            return False
+
+    def record_report(self, report):
+        """Store a user-submitted report about a response."""
+        report = dict(report)
+        report["at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        return self._append(report, kind="report")
 
     def record(self, prompt, response, training_consent, request_id, stats=None, tester=None):
-        """Append one exchange. Never raises into the request path."""
-        now = datetime.datetime.now(datetime.timezone.utc)
+        """Append one exchange. Never raises into the request path.
+
+        The caller is responsible for only calling this when the user opted in;
+        `training_consent` is recorded so a later reader can still tell.
+        """
         row = {
-            "at": now.isoformat(),
+            "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "request_id": request_id,
             "training_consent": bool(training_consent),
             "prompt": prompt,
@@ -47,11 +69,7 @@ class TranscriptStore:
         if tester:
             # Authorised internal testing, which may involve someone under 16.
             row["tester"] = tester
-        try:
-            with self._lock, self._path(now).open("a", encoding="utf-8") as sink:
-                sink.write(json.dumps(row, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
+        self._append(row)
 
     def purge(self, now=None):
         """Delete day files past the retention window. Returns how many went."""
@@ -62,8 +80,11 @@ class TranscriptStore:
         removed = 0
         with self._lock:
             for path in self.dir.glob("*.jsonl"):
+                stem = path.stem
+                if stem.startswith("report-"):
+                    stem = stem[len("report-"):]
                 try:
-                    day = datetime.date.fromisoformat(path.stem)
+                    day = datetime.date.fromisoformat(stem)
                 except ValueError:
                     continue  # not one of ours
                 if day <= cutoff:  # "within 30 days" means the 30th day goes too
@@ -77,6 +98,8 @@ class TranscriptStore:
     def training_rows(self):
         """Every retained exchange the user allowed us to train on."""
         for path in sorted(self.dir.glob("*.jsonl")):
+            if path.name.startswith("report-"):
+                continue
             with path.open(encoding="utf-8") as source:
                 for line in source:
                     try:
@@ -95,6 +118,8 @@ def demo():
         store = TranscriptStore(tmp, retention_days=30)
         store.record("hello", "hi", True, "r1")
         store.record("secret", "sure", False, "r2")
+        store.record_report({"what_went_wrong": "wrong date", "messages": []})
+        assert (Path(tmp) / f"report-{datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d}.jsonl").exists()
 
         rows = list(store.training_rows())
         assert [r["prompt"] for r in rows] == ["hello"], rows

@@ -112,7 +112,8 @@ def test_loop_guard_requires_sustained_cycle():
 @pytest.fixture
 def server():
     engine = ChatEngine(tiny(), None)
-    def stream(prompt, options, event, stats):
+    def stream(prompt, options, event, stats, tokens_per_second=None):
+        assert tokens_per_second, 'the server must pass a serving rate cap'
         yield 'Hello '
         yield 'world'
         stats.update(finish_reason='stop', generated_tokens=2)
@@ -223,27 +224,24 @@ def test_tokenizer_search_still_uses_extra_directories(tmp_path):
     assert find_tokenizer_path(model_dir, extra_dirs=[extra]) == extra / 'tokenizer.json'
 
 
-def test_preview_response_is_sandboxed_and_does_not_call_model(server):
-    from urllib.parse import urlencode
+def test_preview_endpoint_is_gone_with_the_canvas_feature(server):
     url, engine = server
     def forbidden(*args, **kwargs):
-        raise AssertionError('Preview must not invoke inference')
+        raise AssertionError('A removed endpoint must not invoke inference')
     engine.stream = forbidden
-    code = '<h1>Canvas</h1><script>document.body.dataset.test="yes"</script>'
-    data = urlencode({'code': code}).encode()
+    data = json.dumps({'code': '<h1>gone</h1>'}).encode()
     req = urllib.request.Request(url + '/api/preview', data=data,
-        headers={'Content-Type': 'application/x-www-form-urlencoded', 'Origin': url})
-    with urllib.request.urlopen(req) as response:
-        policy = response.headers['Content-Security-Policy']
-        assert 'sandbox allow-scripts;' in policy
-        assert 'allow-same-origin' not in policy
-        assert "default-src 'none'" in policy
-        assert "connect-src 'none'" in policy
-        assert "form-action 'none'" in policy
-        assert response.read().decode() == code
+        headers={'Content-Type': 'application/json', 'Origin': url})
+    try:
+        urllib.request.urlopen(req)
+        raise AssertionError('/api/preview should no longer exist')
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 404
     with request(url + '/') as response:
-        assert "script-src 'self'" in response.headers['Content-Security-Policy']
-        assert 'unsafe-inline' not in response.headers['Content-Security-Policy']
+        policy = response.headers['Content-Security-Policy']
+        assert "script-src 'self'" in policy
+        assert 'unsafe-inline' not in policy
+        assert 'sandbox' not in policy
 
 
 def test_preview_rejects_invalid_and_oversized_sources(server):
