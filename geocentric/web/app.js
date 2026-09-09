@@ -57,6 +57,16 @@ let prefs = stored("geocentric.settings.v1", {
   system: "",
 });
 if (!prefs || typeof prefs !== "object") prefs = { theme: "dark" };
+const CONSENT_KEY = "geocentric.consent.v1";
+const TERMS_VERSION = "2026-09-09";
+const AGE_MINIMUM = 16;
+let consent = stored(CONSENT_KEY, null);
+function saveConsent(next) {
+  consent = next;
+  try {
+    localStorage.setItem(CONSENT_KEY, JSON.stringify(next));
+  } catch {}
+}
 let current =
     chats.find((c) => c.id === stored("geocentric.active.v1", null)) || null,
   busy = false,
@@ -603,6 +613,7 @@ async function send() {
         ...prefs,
         messages: outgoing,
         request_id: requestId,
+        training_consent: Boolean(consent?.training),
       }),
       signal: controller.signal,
     });
@@ -687,6 +698,7 @@ function openSettings() {
     "system",
   ])
     $(key).value = prefs[key] ?? "";
+  $("training-consent").checked = Boolean(consent?.training);
   $("settings").showModal();
 }
 $("profile").onclick = openSettings;
@@ -700,6 +712,7 @@ $("save-settings").onclick = () => {
   try {
     localStorage.setItem("geocentric.settings.v1", JSON.stringify(prefs));
   } catch {}
+  saveConsent({ ...(consent || {}), training: $("training-consent").checked });
   applyTheme();
   updateWelcome();
   $("settings").close();
@@ -748,8 +761,8 @@ function updateWelcome() {
     ? "Start a thought. See where it goes…"
     : "Ask, imagine, or work through an idea…";
   $("welcome-description").textContent = base
-    ? "Give your local model a thought to continue."
-    : "Your local model. A conversation at your own pace.";
+    ? "Give Arc a thought to continue."
+    : "Arc, a small experimental model. A conversation at your own pace.";
   const prompts = base
     ? [
         [
@@ -1004,3 +1017,91 @@ shortcut.textContent = /Mac|iPhone|iPad/.test(navigator.platform)
 render();
 restoreDraft();
 connect();
+
+/* ── Age gate and agreement ───────────────────────────────────────────────
+   Asked before anything else on a first visit. Under 16 gets no path forward
+   and nothing is stored. See https://geocentricai.com/legal/childrens-privacy/ */
+const LEGAL = "https://geocentricai.com/legal";
+function openConsent(existing, onClose) {
+  const layer = document.createElement("div");
+  layer.className = "consent-layer";
+  layer.innerHTML = `
+    <div class="consent-card" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+      <div class="consent-step" data-step="age">
+        <h2 id="consent-title">Are you 16 or older?</h2>
+        <p>Geocentric is not intended for individuals under 16. You must be at least 16 years old to use the Services.</p>
+        <p class="consent-fine">If we learn that an individual under 16 has provided personal information through the Services, we will take appropriate steps to address the account and associated data in accordance with applicable law. <a href="${LEGAL}/childrens-privacy/" target="_blank" rel="noopener">Children's Privacy</a></p>
+        <div class="consent-actions">
+          <button type="button" class="primary" data-action="age-yes">I am 16 or older</button>
+          <button type="button" data-action="age-no">I am under 16</button>
+        </div>
+      </div>
+      <div class="consent-step" data-step="terms" hidden>
+        <h2>Before you use Arc</h2>
+        <p>Arc is an AI system, not a person. It is often wrong about facts, arithmetic and instructions, and you are responsible for what you submit and for what you do with what it returns.</p>
+        <p>Using it means agreeing to our <a href="${LEGAL}/terms/" target="_blank" rel="noopener">Terms of Service</a> and <a href="${LEGAL}/acceptable-use/" target="_blank" rel="noopener">Acceptable Use Policy</a>.</p>
+        <p class="consent-fine">We keep prompts and model responses for up to 30 days to review safety and abuse, then delete them. We never sell them. Your conversation history is saved in this browser. <a href="${LEGAL}/privacy/" target="_blank" rel="noopener">Privacy Policy</a></p>
+        <label class="consent-opt">
+          <input type="checkbox" data-field="training" />
+          <span>Allow my prompts and responses to be used to improve and train Geocentric models. <em>Optional. Off unless you tick it, and you can change it any time in Settings.</em></span>
+        </label>
+        <div class="consent-actions">
+          <button type="button" class="primary" data-action="accept">Agree and continue</button>
+          ${existing ? '<button type="button" data-action="cancel">Cancel</button>' : ""}
+        </div>
+      </div>
+      <div class="consent-step" data-step="blocked" hidden>
+        <h2>You need to be 16 to use Arc</h2>
+        <p>Thanks for being straight with us. The Services are not available to individuals under 16, so please do not continue.</p>
+        <p class="consent-fine">A parent or guardian can reach us at <a href="mailto:contact@geocentricai.com">contact@geocentricai.com</a>.</p>
+      </div>
+    </div>`;
+  document.body.appendChild(layer);
+  document.body.classList.add("consent-open");
+  const training = layer.querySelector('[data-field="training"]');
+  training.checked = Boolean(existing?.training);
+  const show = (name) => {
+    layer.querySelectorAll(".consent-step").forEach((step) => {
+      step.hidden = step.dataset.step !== name;
+    });
+    layer.querySelector(`[data-step="${name}"] button`)?.focus();
+  };
+  const close = () => {
+    layer.remove();
+    document.body.classList.remove("consent-open");
+    onClose?.();
+  };
+  layer.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-action]")?.dataset.action;
+    if (action === "age-yes") show("terms");
+    else if (action === "age-no") show("blocked");
+    else if (action === "cancel") close();
+    else if (action === "accept") {
+      saveConsent({
+        terms: TERMS_VERSION,
+        age: AGE_MINIMUM,
+        training: training.checked,
+        at: new Date().toISOString(),
+      });
+      close();
+    }
+  });
+  layer.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && existing) return close();
+    if (event.key !== "Tab") return;
+    const items = [...layer.querySelectorAll("a[href], button, input")].filter(
+      (el) => el.offsetParent !== null,
+    );
+    if (!items.length) return;
+    const [first, last] = [items[0], items[items.length - 1]];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  show(existing ? "terms" : "age");
+}
+if (!consent || consent.terms !== TERMS_VERSION) openConsent(null);

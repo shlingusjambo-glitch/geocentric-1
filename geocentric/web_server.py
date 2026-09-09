@@ -18,6 +18,7 @@ from geocentric.chat import DEFAULT_SYSTEM
 from geocentric.checkpoint import load_model_and_tokenizer
 from geocentric.device import resolve_dtype, select_device
 from geocentric.generate import build_chat_prompt, stream_text
+from geocentric.transcripts import TranscriptStore
 
 STATIC = Path(__file__).with_name("web")
 ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
@@ -66,9 +67,11 @@ def network_urls(host, port):
 
 
 class ChatEngine:
-    def __init__(self, model, tokenizer, stage="pretrained", dtype=torch.float32, defaults=None):
+    def __init__(self, model, tokenizer, stage="pretrained", dtype=torch.float32, defaults=None,
+                 transcripts=None):
         self.model, self.tokenizer, self.stage, self.dtype = model, tokenizer, stage, dtype
         self.defaults = defaults or {}
+        self.transcripts = transcripts
         self.lock = threading.Lock()
         self.requests = {}
         self.request_lock = threading.Lock()
@@ -123,7 +126,10 @@ class ChatEngine:
             uuid.UUID(request_id)
         except (ValueError, TypeError, AttributeError):
             raise ValueError("request_id must be a UUID")
-        return prompt, options, request_id
+        training_consent = payload.get("training_consent", False)
+        if not isinstance(training_consent, bool):
+            raise ValueError("training_consent must be true or false")
+        return prompt, options, request_id, training_consent
 
     def stream(self, prompt, options, event, stats):
         device = next(self.model.parameters()).device
@@ -147,7 +153,8 @@ class ChatHandler(BaseHTTPRequestHandler):
     server_version = "Geocentric"
 
     def log_message(self, format, *args):
-        # Chat text is never logged by the server.
+        # No access log. Chat text is retained only by TranscriptStore, and only
+        # when the operator started the server with --transcripts.
         pass
 
     def send_response_headers(self, status, content_type, preview=False):
@@ -219,7 +226,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         if self.path != "/api/chat":
             return self.json_response(404, {"error": "Not found"})
         try:
-            prompt, options, request_id = engine.validate(payload)
+            prompt, options, request_id, training_consent = engine.validate(payload)
         except ValueError as exc:
             return self.json_response(400, {"error": str(exc)})
         if not engine.lock.acquire(blocking=False):
@@ -230,9 +237,14 @@ class ChatHandler(BaseHTTPRequestHandler):
         try:
             self.send_response_headers(200, "application/x-ndjson")
             self.emit({"type": "start", "request_id": request_id})
+            reply = []
             for chunk in engine.stream(prompt, options, event, stats):
+                reply.append(chunk)
                 self.emit({"type": "delta", "text": chunk})
             self.emit({"type": "done", **stats})
+            if engine.transcripts:
+                engine.transcripts.record(prompt, "".join(reply), training_consent,
+                                          request_id, stats)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             event.set()
         except Exception as exc:
@@ -262,7 +274,9 @@ def serve(args):
                                                       checkpoint_name=args.checkpoint, with_stage=True)
     defaults = {key: getattr(args, key) for key in ("max_new_tokens", "temperature", "top_k",
                 "top_p", "min_p", "repetition_penalty", "system", "mode")}
-    engine = ChatEngine(model, tokenizer, stage, dtype, defaults)
+    transcripts = (TranscriptStore(args.transcripts, getattr(args, "transcript_days", 30))
+                   if getattr(args, "transcripts", None) else None)
+    engine = ChatEngine(model, tokenizer, stage, dtype, defaults, transcripts)
     with ChatServer((args.host, args.port), engine) as server:
         local, lan = network_urls(args.host, server.server_port)
         print(f"\n{model.config.model_name} · {stage} · {device} · {dtype}", flush=True)
@@ -271,6 +285,11 @@ def serve(args):
             print(f"  LAN / Wi-Fi: {url}", flush=True)
         if not lan and args.host == "0.0.0.0":
             print("  No LAN address detected; check your network connection.", flush=True)
+        if transcripts:
+            print(f"  Retaining prompts and responses in {transcripts.dir} "
+                  f"for {transcripts.retention_days} days.", flush=True)
+        else:
+            print("  Not retaining prompts or responses.", flush=True)
         print("  Chats stay in this browser. Anyone on the reachable LAN can use this server.\n"
               "  Press Ctrl+C to stop. Use --host 127.0.0.1 for localhost only.\n", flush=True)
         if not args.no_browser:

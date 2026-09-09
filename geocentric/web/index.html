@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light" />
     <meta
       name="description"
-      content="Chat privately with your locally trained Geocentric model."
+      content="Chat with Arc, a small experimental language model from Geocentric."
     />
     <title>Geocentric</title>
     <link rel="stylesheet" href="/style.css" />
@@ -126,7 +126,7 @@
           </div>
         </form>
         <p class="footnote">
-          <span>Powered by your local model.</span>
+          <span>Arc is an AI system and can be wrong. <a href="https://geocentricai.com/legal/ai-disclosure/" target="_blank" rel="noopener">What it gets wrong</a></span>
           <span>Check important information.</span>
         </p>
       </div>
@@ -207,8 +207,35 @@
         ></textarea>
       </label>
       <p class="setting-help">
-        Chats are saved only in this browser. Model inference runs on the
-        computer serving this page.
+        Your conversation history is saved only in this browser.
+      </p>
+      <p class="settings-section">Privacy</p>
+      <label class="consent-setting"
+        ><input type="checkbox" id="training-consent" /><span
+          >Allow my prompts and responses to be used to improve and train
+          Geocentric models.</span
+        ></label
+      >
+      <p class="setting-help">
+        Optional, and off unless you turn it on. Either way we keep prompts and
+        responses for up to 30 days to review safety and abuse, then delete
+        them. We never sell them.
+        <a href="https://geocentricai.com/legal/privacy/" target="_blank" rel="noopener"
+          >Privacy Policy</a
+        >.
+      </p>
+      <p class="setting-help">
+        Arc is an AI system. It is often wrong about facts, arithmetic and
+        instructions.
+        <a href="https://geocentricai.com/legal/ai-disclosure/" target="_blank" rel="noopener"
+          >What it gets wrong</a
+        >
+        &middot;
+        <a href="https://geocentricai.com/legal/terms/" target="_blank" rel="noopener">Terms</a>
+        &middot;
+        <a href="https://geocentricai.com/legal/acceptable-use/" target="_blank" rel="noopener"
+          >Acceptable use</a
+        >
       </p>
       <div class="dialog-actions">
         <button id="export-chat">Export chat</button

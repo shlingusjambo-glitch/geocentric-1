@@ -256,6 +256,11 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("--host", default="0.0.0.0", help="Server bind address (default: local network)")
     ch.add_argument("--port", type=int, default=8000)
     ch.add_argument("--no_browser", action="store_true")
+    ch.add_argument("--transcripts", default=None, metavar="DIR",
+                    help="Retain prompts and responses here for safety review "
+                         "(off by default; required by the hosted privacy policy)")
+    ch.add_argument("--transcript_days", type=int, default=30,
+                    help="Delete retained transcripts after this many days (default: 30)")
     ch.add_argument("--dtype", default="auto", choices=["auto", "fp32", "fp16", "bf16"])
     ch.add_argument("--checkpoint", default=None)
     ch.add_argument("--max_new_tokens", type=int, default=256)

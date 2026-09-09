@@ -1262,3 +1262,110 @@ dialog::backdrop { animation: surface-in 150ms ease-out; }
 @keyframes dialog-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
 @keyframes message-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes waiting-turn { to { transform: rotate(360deg); } }
+
+/* ── Age gate and agreement ─────────────────────────────────────────────── */
+body.consent-open {
+  overflow: hidden;
+}
+.consent-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: clamp(12px, 3vw, 28px);
+  background: rgba(0, 0, 0, 0.62);
+}
+.consent-card {
+  width: min(100%, 560px);
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  padding: clamp(22px, 3vw, 32px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--text);
+}
+.consent-card h2 {
+  margin: 0 0 14px;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+.consent-card p {
+  margin: 0 0 12px;
+  line-height: 1.55;
+}
+.consent-fine {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+.consent-card a {
+  color: var(--accent);
+}
+.consent-opt {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 11px;
+  align-items: start;
+  margin: 18px 0 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.consent-opt input {
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.consent-opt em {
+  display: block;
+  margin-top: 5px;
+  font-style: normal;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.consent-actions {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.consent-actions button {
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.consent-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text);
+  font-weight: 600;
+}
+.consent-setting {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  cursor: pointer;
+}
+.consent-setting input {
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.footnote a {
+  color: inherit;
+  text-underline-offset: 3px;
+}
+.footnote a:hover {
+  color: var(--text);
+}
