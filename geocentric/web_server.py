@@ -168,6 +168,11 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy",
+                         "geolocation=(), camera=(), microphone=(), payment=(), usb=()")
+        # Only meaningful behind TLS; harmless on a LAN server, which browsers
+        # ignore it on because the connection is not HTTPS.
+        self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         policy = ("sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
                   "style-src 'unsafe-inline'; img-src data:; font-src data:; "
                   "connect-src 'none'; frame-src 'none'; object-src 'none'; "

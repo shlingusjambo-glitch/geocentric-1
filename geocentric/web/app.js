@@ -756,11 +756,14 @@ async function connect() {
     model = await response.json();
     prefs = { ...prefs, ...model.defaults, ...savedPrefs };
     prefs.system = prefs.system || "";
-    $("model-menu").textContent = model.name;
-    $("model-menu").title = model.name + " · Loaded model";
+    // The checkpoint reports its training name; the public model is called Arc
+    // (https://geocentricai.com/models/arc/). Display the public name.
+    const displayName = model.name === "Geocentric" ? "Arc" : model.name;
+    $("model-menu").textContent = displayName;
+    $("model-menu").title = displayName + " · Loaded model";
     $("mode-badge").textContent = model.mode === "base" ? "Base model" : "Chat";
     $("model-details").textContent =
-      `${model.name} · ${(model.parameters / 1e6).toFixed(1)}M parameters · ${model.context.toLocaleString()} token context · ${model.device}`;
+      `${displayName} · ${(model.parameters / 1e6).toFixed(1)}M parameters · ${model.context.toLocaleString()} token context · ${model.device}`;
     $("max_new_tokens").max = Math.min(4096, model.context - 1);
     prefs.max_new_tokens = Math.min(
       prefs.max_new_tokens || model.defaults.max_new_tokens || 256,
