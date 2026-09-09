@@ -18,6 +18,7 @@ from geocentric.chat import DEFAULT_SYSTEM
 from geocentric.checkpoint import load_model_and_tokenizer
 from geocentric.device import resolve_dtype, select_device
 from geocentric.generate import build_chat_prompt, stream_text
+from geocentric.testers import TesterRegistry
 from geocentric.transcripts import TranscriptStore
 
 STATIC = Path(__file__).with_name("web")
@@ -68,10 +69,11 @@ def network_urls(host, port):
 
 class ChatEngine:
     def __init__(self, model, tokenizer, stage="pretrained", dtype=torch.float32, defaults=None,
-                 transcripts=None):
+                 transcripts=None, testers=None):
         self.model, self.tokenizer, self.stage, self.dtype = model, tokenizer, stage, dtype
         self.defaults = defaults or {}
         self.transcripts = transcripts
+        self.testers = testers
         self.lock = threading.Lock()
         self.requests = {}
         self.request_lock = threading.Lock()
@@ -129,7 +131,10 @@ class ChatEngine:
         training_consent = payload.get("training_consent", False)
         if not isinstance(training_consent, bool):
             raise ValueError("training_consent must be true or false")
-        return prompt, options, request_id, training_consent
+        tester = payload.get("tester_key")
+        if tester is not None and not isinstance(tester, str):
+            raise ValueError("tester_key must be text")
+        return prompt, options, request_id, training_consent, tester
 
     def stream(self, prompt, options, event, stats):
         device = next(self.model.parameters()).device
@@ -223,10 +228,19 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if event:
                     event.set()
             return self.json_response(200, {"cancelled": event is not None})
+        if self.path == "/api/tester":
+            if not isinstance(payload, dict):
+                return self.json_response(400, {"error": "Expected a JSON object"})
+            if not engine.testers:
+                return self.json_response(404, {"error": "Tester access is not enabled"})
+            label = engine.testers.verify(payload.get("key"))
+            if not label:
+                return self.json_response(403, {"error": "That access key was not recognised"})
+            return self.json_response(200, {"ok": True, "label": label})
         if self.path != "/api/chat":
             return self.json_response(404, {"error": "Not found"})
         try:
-            prompt, options, request_id, training_consent = engine.validate(payload)
+            prompt, options, request_id, training_consent, tester_key = engine.validate(payload)
         except ValueError as exc:
             return self.json_response(400, {"error": str(exc)})
         if not engine.lock.acquire(blocking=False):
@@ -243,8 +257,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self.emit({"type": "delta", "text": chunk})
             self.emit({"type": "done", **stats})
             if engine.transcripts:
-                engine.transcripts.record(prompt, "".join(reply), training_consent,
-                                          request_id, stats)
+                tester = engine.testers.verify(tester_key) if (engine.testers and tester_key) else None
+                # An authorised tester may be under 16, so their exchanges are
+                # never eligible for training regardless of the opt-in.
+                engine.transcripts.record(prompt, "".join(reply),
+                                          training_consent and not tester,
+                                          request_id, stats, tester=tester)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             event.set()
         except Exception as exc:
@@ -276,7 +294,8 @@ def serve(args):
                 "top_p", "min_p", "repetition_penalty", "system", "mode")}
     transcripts = (TranscriptStore(args.transcripts, getattr(args, "transcript_days", 30))
                    if getattr(args, "transcripts", None) else None)
-    engine = ChatEngine(model, tokenizer, stage, dtype, defaults, transcripts)
+    testers = TesterRegistry(args.tester_keys) if getattr(args, "tester_keys", None) else None
+    engine = ChatEngine(model, tokenizer, stage, dtype, defaults, transcripts, testers)
     with ChatServer((args.host, args.port), engine) as server:
         local, lan = network_urls(args.host, server.server_port)
         print(f"\n{model.config.model_name} · {stage} · {device} · {dtype}", flush=True)
@@ -285,6 +304,8 @@ def serve(args):
             print(f"  LAN / Wi-Fi: {url}", flush=True)
         if not lan and args.host == "0.0.0.0":
             print("  No LAN address detected; check your network connection.", flush=True)
+        if testers:
+            print(f"  Authorised-tester access enabled: {len(testers.records)} key(s).", flush=True)
         if transcripts:
             print(f"  Retaining prompts and responses in {transcripts.dir} "
                   f"for {transcripts.retention_days} days.", flush=True)

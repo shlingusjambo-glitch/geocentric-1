@@ -36,3 +36,22 @@ def test_rows_round_trip_as_jsonl(tmp_path):
     assert row["response"] == "world"
     assert row["generated_tokens"] == 7
     assert row["training_consent"] is True
+
+
+def test_tester_rows_are_marked_and_never_trainable(tmp_path):
+    from geocentric.testers import TesterRegistry, hash_key
+
+    store = TranscriptStore(tmp_path)
+    # The server passes `training_consent and not tester`, so even a consenting
+    # authorised tester never lands in a training set.
+    store.record("probe", "reply", False, "r1", tester="under-16 safety review")
+    row = json.loads(next(tmp_path.glob("*.jsonl")).read_text().strip())
+    assert row["tester"] == "under-16 safety review"
+    assert row["training_consent"] is False
+    assert list(store.training_rows()) == []
+
+    keys = tmp_path / "testers.txt"
+    keys.write_text(f"{hash_key('let-me-in')}  riley\n", encoding="utf-8")
+    registry = TesterRegistry(keys)
+    assert registry.verify("let-me-in") == "riley"
+    assert registry.verify("nope") is None

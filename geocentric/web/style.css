@@ -1369,3 +1369,36 @@ body.consent-open {
 .footnote a:hover {
   color: var(--text);
 }
+.consent-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.consent-field {
+  display: block;
+  margin: 16px 0 10px;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+.consent-field input {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--soft);
+  color: var(--text);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.consent-error {
+  margin: 0 0 12px;
+  color: #e2a0a0;
+  font-size: 0.86rem;
+}

@@ -33,7 +33,7 @@ class TranscriptStore:
     def _path(self, when):
         return self.dir / f"{when:%Y-%m-%d}.jsonl"
 
-    def record(self, prompt, response, training_consent, request_id, stats=None):
+    def record(self, prompt, response, training_consent, request_id, stats=None, tester=None):
         """Append one exchange. Never raises into the request path."""
         now = datetime.datetime.now(datetime.timezone.utc)
         row = {
@@ -44,6 +44,9 @@ class TranscriptStore:
             "response": response,
             "generated_tokens": (stats or {}).get("generated_tokens"),
         }
+        if tester:
+            # Authorised internal testing, which may involve someone under 16.
+            row["tester"] = tester
         try:
             with self._lock, self._path(now).open("a", encoding="utf-8") as sink:
                 sink.write(json.dumps(row, ensure_ascii=False) + "\n")

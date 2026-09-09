@@ -261,6 +261,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "(off by default; required by the hosted privacy policy)")
     ch.add_argument("--transcript_days", type=int, default=30,
                     help="Delete retained transcripts after this many days (default: 30)")
+    ch.add_argument("--tester_keys", default=None, metavar="FILE",
+                    help="Registry of authorised internal testers, who may be under the "
+                         "public minimum age (see python -m geocentric.testers --new)")
     ch.add_argument("--dtype", default="auto", choices=["auto", "fp32", "fp16", "bf16"])
     ch.add_argument("--checkpoint", default=None)
     ch.add_argument("--max_new_tokens", type=int, default=256)

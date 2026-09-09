@@ -57,12 +57,32 @@ let prefs = stored("geocentric.settings.v1", {
   system: "",
 });
 if (!prefs || typeof prefs !== "object") prefs = { theme: "dark" };
+/* Consent is shared with geocentricai.com through a cookie on the parent
+   domain, so a visitor who already agreed there is not asked again here.
+   localStorage is the fallback when the cookie cannot be set. */
 const CONSENT_KEY = "geocentric.consent.v1";
+const CONSENT_COOKIE = "gc_consent";
 const TERMS_VERSION = "2026-09-09";
 const AGE_MINIMUM = 16;
-let consent = stored(CONSENT_KEY, null);
+const COOKIE_DOMAIN = location.hostname.endsWith("geocentricai.com")
+  ? "; domain=.geocentricai.com"
+  : "";
+function cookieConsent() {
+  const raw = document.cookie
+    .split("; ")
+    .find((row) => row.startsWith(CONSENT_COOKIE + "="));
+  if (!raw) return null;
+  try {
+    return JSON.parse(decodeURIComponent(raw.slice(CONSENT_COOKIE.length + 1)));
+  } catch {
+    return null;
+  }
+}
+let consent = cookieConsent() || stored(CONSENT_KEY, null);
 function saveConsent(next) {
   consent = next;
+  const secure = location.protocol === "https:" ? "; secure" : "";
+  document.cookie = `${CONSENT_COOKIE}=${encodeURIComponent(JSON.stringify(next))}; path=/${COOKIE_DOMAIN}; max-age=31536000; samesite=lax${secure}`;
   try {
     localStorage.setItem(CONSENT_KEY, JSON.stringify(next));
   } catch {}
@@ -614,6 +634,7 @@ async function send() {
         messages: outgoing,
         request_id: requestId,
         training_consent: Boolean(consent?.training),
+        ...(consent?.testerKey ? { tester_key: consent.testerKey } : {}),
       }),
       signal: controller.signal,
     });
@@ -1054,6 +1075,18 @@ function openConsent(existing, onClose) {
         <h2>You need to be 16 to use Arc</h2>
         <p>Thanks for being straight with us. The Services are not available to individuals under 16, so please do not continue.</p>
         <p class="consent-fine">A parent or guardian can reach us at <a href="mailto:contact@geocentricai.com">contact@geocentricai.com</a>.</p>
+        <p class="consent-fine"><button type="button" class="consent-link" data-action="tester">I have an access key from Geocentric</button></p>
+      </div>
+      <div class="consent-step" data-step="tester" hidden>
+        <h2>Authorised tester access</h2>
+        <p>Geocentric authorises specific people to use Arc for development, safety testing, and age-suitability review, including people under 16. Access is by key, issued to you by name.</p>
+        <p class="consent-fine">Your conversations are recorded as internal testing, are never used to train models, and are deleted on the same 30-day schedule. If you are under 16, this requires a written agreement with your parent or guardian already in place. <a href="${LEGAL}/childrens-privacy/#testers" target="_blank" rel="noopener">How this works</a></p>
+        <label class="consent-field">Access key<input type="text" data-field="tester-key" autocomplete="off" spellcheck="false" /></label>
+        <p class="consent-error" data-role="tester-error" hidden></p>
+        <div class="consent-actions">
+          <button type="button" class="primary" data-action="tester-verify">Verify key</button>
+          <button type="button" data-action="tester-back">Back</button>
+        </div>
       </div>
     </div>`;
   document.body.appendChild(layer);
@@ -1076,6 +1109,9 @@ function openConsent(existing, onClose) {
     if (action === "age-yes") show("terms");
     else if (action === "age-no") show("blocked");
     else if (action === "cancel") close();
+    else if (action === "tester") show("tester");
+    else if (action === "tester-back") show("blocked");
+    else if (action === "tester-verify") verifyTester();
     else if (action === "accept") {
       saveConsent({
         terms: TERMS_VERSION,
@@ -1102,6 +1138,36 @@ function openConsent(existing, onClose) {
       first.focus();
     }
   });
+  async function verifyTester() {
+    const field = layer.querySelector('[data-field="tester-key"]');
+    const error = layer.querySelector('[data-role="tester-error"]');
+    const key = field.value.trim();
+    error.hidden = true;
+    if (!key) return field.focus();
+    let result = null;
+    try {
+      const response = await fetch("/api/tester", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+      result = await response.json();
+      if (!response.ok) throw new Error(result?.error || "Verification failed");
+    } catch (failure) {
+      error.textContent = failure.message || "Could not reach the server.";
+      error.hidden = false;
+      return;
+    }
+    saveConsent({
+      terms: TERMS_VERSION,
+      tester: result.label,
+      testerKey: key,
+      training: false,
+      at: new Date().toISOString(),
+    });
+    close();
+  }
+
   show(existing ? "terms" : "age");
 }
 if (!consent || consent.terms !== TERMS_VERSION) openConsent(null);
