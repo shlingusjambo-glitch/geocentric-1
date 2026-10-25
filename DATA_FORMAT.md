@@ -101,3 +101,19 @@ are: truncating one cuts the answer mid-sentence and removes its stop token.
 
 Only the assistant's turns contribute to the loss. The image placeholders sit in the
 user turn and are masked out.
+
+## Distilling from a local model
+
+`geocentric distill` asks a local [Ollama](https://ollama.com) model to answer a list of
+prompts and writes the answers as SFT records. The teacher defaults to
+`deepseek-coder-v2:16b` (`ollama pull deepseek-coder-v2:16b`); `--model` overrides it.
+
+```bash
+geocentric distill --output_dir data/distilled --prompts prompts.txt
+geocentric sft --sft_data_path data/distilled/distilled.jsonl
+```
+
+`--prompts` takes a `.txt` (one prompt per line) or `.jsonl` (`prompt`, `instruction` or
+`question` field); without it a small built-in seed set is used. Output goes to
+`<output_dir>/distilled.jsonl` as `messages` records. Re-running resumes: prompts already
+in the file are skipped. Check the teacher model's license before training on its output.

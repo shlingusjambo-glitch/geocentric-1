@@ -290,6 +290,16 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--raw", action="store_true", help="Force raw completion, no chat template")
     gen.add_argument("--image", default=None, help="Image to condition on (multimodal only)")
 
+    dist = sub.add_parser("distill", help="Distill SFT training data from a local Ollama model")
+    dist.add_argument("--output_dir", required=True, help="Directory to write distilled.jsonl into")
+    dist.add_argument("--prompts", default=None, help=".txt (one per line) or .jsonl prompt file; built-in seeds if omitted")
+    dist.add_argument("--model", default=None, help="Teacher model (default: deepseek-coder-v2:16b)")
+    dist.add_argument("--host", default="http://localhost:11434", help="Ollama server URL")
+    dist.add_argument("--system", default=None, help="Optional system prompt for the teacher and the records")
+    dist.add_argument("--temperature", type=float, default=0.7)
+    dist.add_argument("--max_tokens", type=int, default=1024)
+    dist.add_argument("--timeout", type=float, default=600.0, help="Seconds to wait per response")
+
     pc = sub.add_parser("plan", help="Show the architecture and token budget for a parameter target")
     pc.add_argument("--preset", default="120m")
     pc.add_argument("--vocab_size", type=int, default=32000)
@@ -870,6 +880,25 @@ def _run_list_models() -> None:
         print("No checkpoints found under runs/ or models/.")
 
 
+def _run_distill(args: argparse.Namespace) -> None:
+    from geocentric import distill as d
+
+    try:
+        model = d.resolve_model(args.model, d.installed_models(args.host))
+        prompts = d.load_prompts(args.prompts)
+        chat = d.default_chat(args.host, model, args.temperature, args.max_tokens, args.timeout)
+        print(f"Teacher: {model} | {len(prompts)} prompts -> {Path(args.output_dir) / d.OUTPUT_NAME}")
+        written = sum(1 for _ in d.distill(
+            args.output_dir, prompts, chat, system=args.system, teacher=model,
+            on_progress=lambda i, n, p: print(f"[{i}/{n}] {p[:70]}"),
+        ))
+    except d.DistillError as exc:
+        print(f"distill: {exc}")
+        sys.exit(1)
+    print(f"Wrote {written} new records. Train on them with: geocentric sft --sft_data_path "
+          f"{Path(args.output_dir) / d.OUTPUT_NAME}")
+
+
 def _run_script(filename: str, function: str) -> None:
     """Load a helper from scripts/ by path — it ships beside the package, not inside it."""
     import importlib.util
@@ -958,6 +987,8 @@ def main() -> None:
             _run_chat(args)
     elif args.command == "generate":
         _run_generate(args)
+    elif args.command == "distill":
+        _run_distill(args)
     elif args.command == "plan":
         _run_plan(args)
     elif args.command == "list-models":
